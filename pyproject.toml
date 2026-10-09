@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "xiamen-marine-report"
+version = "0.1.0"
+description = "Evidence-first marine reports for Haicang, Wuyuan and Huandong, Xiamen"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [{name = "Xiamen Marine Report contributors"}]
+dependencies = [
+  "httpx>=0.28,<1",
+  "matplotlib>=3.10,<4",
+  "numpy>=2.2,<3",
+  "Pillow>=11,<13",
+  "reportlab>=4.4,<5",
+  "astral>=3.2,<4",
+  "tzdata>=2025.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3,<10", "ruff>=0.11,<1", "pypdf>=5.4,<7", "build>=1.2,<2", "jsonschema>=4.23,<5"]
+
+[project.scripts]
+marine-report = "xiamen_marine_report.cli:main"
+
+[project.urls]
+Repository = "https://github.com/waldenhchua-dotcom/xiamen-marine-report"
+Issues = "https://github.com/waldenhchua-dotcom/xiamen-marine-report/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/xiamen_marine_report"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["CONTRACT.md", "runs", "dist", "work", ".venv"]
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+

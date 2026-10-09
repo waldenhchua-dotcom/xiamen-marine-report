@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.org/xiamen-marine-report/review.schema.json",
+  "title": "Independent candidate-bound manual review",
+  "type": "object",
+  "required": ["reviewer", "checked_at", "candidate_digest", "checklist"],
+  "properties": {
+    "reviewer": {"oneOf": [{"type": "string", "minLength": 1}, {"type": "object", "required": ["id"], "properties": {"id": {"type": "string", "minLength": 1}}}]},
+    "checked_at": {"type": "string", "format": "date-time"},
+    "candidate_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "checklist": {
+      "type": "object",
+      "required": ["request_and_source_dates", "source_hashes", "tide_extrema_and_hourly_values", "wind_and_gust_peaks", "hourly_and_total_precipitation", "weather_codes_and_official_warnings", "spatial_applicability", "three_flood_segments_cross_day_coverage", "tide_and_current_distinction", "all_pdf_pages_and_three_pngs_readable"],
+      "additionalProperties": false,
+      "properties": {
+        "request_and_source_dates": {"type": "boolean"}, "source_hashes": {"type": "boolean"},
+        "tide_extrema_and_hourly_values": {"type": "boolean"}, "wind_and_gust_peaks": {"type": "boolean"},
+        "hourly_and_total_precipitation": {"type": "boolean"}, "weather_codes_and_official_warnings": {"type": "boolean"},
+        "spatial_applicability": {"type": "boolean"}, "three_flood_segments_cross_day_coverage": {"type": "boolean"},
+        "tide_and_current_distinction": {"type": "boolean"}, "all_pdf_pages_and_three_pngs_readable": {"type": "boolean"}
+      }
+    },
+    "notes": {"type": "string"}
+  }
+}

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>厦门海况 · 三地证据报告</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="masthead">
+    <a class="brand" href="/">厦门<span>海况</span></a>
+    <span class="descriptor">三地海洋证据报告</span>
+    <span class="connection" id="connection">连接本地服务…</span>
+  </header>
+  <main class="workspace">
+    <aside class="controls">
+      <p class="eyebrow">报告设置</p>
+      <h1>看清海况，<br>再做计划。</h1>
+      <p class="intro">自动取证、逐时对齐、保存来源。覆盖目标日起的三个完整涨潮段。</p>
+      <form id="report-form">
+        <label class="field-label" for="date">目标日期 <span>北京时间</span></label>
+        <input type="date" id="date" name="date" required>
+        <fieldset>
+          <legend class="field-label">报告水域</legend>
+          <label class="site"><input type="checkbox" name="sites" value="haicang" checked><span><strong>海沧湾</strong><small>候选参考站 · 厦门</small></span><span class="site-code">HC</span></label>
+          <label class="site"><input type="checkbox" name="sites" value="wuyuan" checked><span><strong>五缘湾</strong><small>候选参考站 · 翔安</small></span><span class="site-code">WY</span></label>
+          <label class="site"><input type="checkbox" name="sites" value="huandong" checked><span><strong>环东</strong><small>候选参考站 · 翔安</small></span><span class="site-code">HD</span></label>
+        </fieldset>
+        <label class="partial"><input type="checkbox" id="partial"><span>证据不齐时，生成明确标记的<br>未批准部分查看版</span></label>
+        <button type="submit" class="primary" id="fetch-button">自动获取 API 数据 <span aria-hidden="true">↗</span></button>
+        <button type="button" class="secondary" id="demo-button">运行离线合成演示</button>
+        <p class="form-error" id="form-error" role="alert"></p>
+      </form>
+      <div class="safety"><strong>仅供参考 · 不构成下水许可</strong><p>参考站潮高不是水深。近岸格点适用性、官方预警与跨日覆盖必须分别核验。</p></div>
+    </aside>
+
+    <section class="report-space" aria-labelledby="workspace-title">
+      <div class="section-title"><div><p class="eyebrow">证据工作台</p><h2 id="workspace-title">三处水域，一份可追溯的报告。</h2></div><span class="format">PDF + PNG</span></div>
+      <div class="status-line" role="status" aria-live="polite"><span class="status-mark" id="status-mark"></span><strong id="status-title">等待选择日期</strong><span id="status-detail">所有时间统一显示为北京时间</span></div>
+      <div class="pipeline" aria-label="报告流程"><span id="stage-fetch">获取原始证据</span><span id="stage-validate">核验完整覆盖</span><span id="stage-render">生成候选报告</span><span>独立审核</span></div>
+      <section id="empty-state" class="empty-state">
+        <div class="empty-heading"><span class="sheet-number">3</span><div><h3>报告从来源开始。</h3><p>选择左侧日期，然后自动获取数据。<br>想先看报告效果，可运行离线合成演示。</p></div></div>
+        <div class="source-table">
+          <div class="source-head"><span>证据类别</span><span>获取来源</span><span>状态</span></div>
+          <div><strong>潮位与极值</strong><span>国家海洋信息中心公开接口</span><span>待取证</span></div>
+          <div><strong>风、雨与气温</strong><span>Open-Meteo · ECMWF / GFS</span><span>待取证</span></div>
+          <div><strong>海浪与表层流</strong><span>Open-Meteo Marine · 分变量格点</span><span>待取证</span></div>
+          <div><strong>官方通告</strong><span>厦门海洋预报台公开网页</span><span>待核正文</span></div>
+          <div><strong>当地日落</strong><span>天文算法估算 · 各水域各日期</span><span>随报告计算</span></div>
+        </div>
+        <p class="evidence-note">预报是模型结果。未取得预警正文，不代表没有预警。</p>
+      </section>
+      <section id="result" hidden>
+        <div class="result-summary"><div><span id="data-label">冻结证据</span><h3 id="result-heading">报告结果</h3></div><div class="metrics"><div><strong id="source-count">0</strong><span>来源对象</span></div><div><strong id="series-count">0</strong><span>逐时序列</span></div></div></div>
+        <div id="validation-message" class="validation-message"></div>
+        <div id="gaps"></div>
+        <div id="downloads" class="downloads"></div>
+        <div class="preview-tabs" id="preview-tabs"></div>
+        <div id="preview" class="preview"></div>
+        <details class="audit"><summary>查看取证与校验记录</summary><pre id="audit-json"></pre></details>
+      </section>
+      <footer>每个响应留存原件与 SHA-256。缺失值不会替换成零或其他日期的数据。</footer>
+    </section>
+  </main>
+</body>
+</html>
