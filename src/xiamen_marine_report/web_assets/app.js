@@ -6,6 +6,7 @@ $('date').value = `${datePart('year')}-${datePart('month')}-${datePart('day')}`;
 let busy = false;
 const states = {queued:'准备取证',running:'正在处理',complete:'候选已生成',blocked:'关键证据未通过',failed:'任务未完成'};
 function labelFor(file) {
+  if (file.name.endsWith('_raw_tide_UNVERIFIED_TIMEZONE.csv')) return '原始潮位表 CSV · 时区未核实';
   if (file.name.endsWith('.zip')) return '冻结证据 ZIP';
   if (file.name.endsWith('.pdf')) return file.name.includes('PARTIAL') ? '部分查看 PDF · 未批准' : '参考 PDF · 未批准';
   if (file.name.endsWith('.png')) {
@@ -53,7 +54,23 @@ function showResult(job) {
   $('result-heading').textContent = `${job.request.date} · ${job.synthetic ? '合成演示' : '取证结果'}`;
   const blocked = job.status !== 'complete';
   $('validation-message').className = `validation-message${blocked ? ' blocked' : ''}`;
-  $('validation-message').textContent = blocked ? `数据或来源尚不完整，未签发完整三段报告。${job.candidate_digest ? '仅生成带显著限制标记的部分查看版。' : '尚未生成 PDF / PNG。'}未取得预警正文，不代表无预警。` : '确定性数据校验已通过。PDF / PNG 是 UNAPPROVED_REFERENCE 候选；图中文字与布局仍须独立逐页审核，不构成下水许可。';
+  $('validation-message').textContent = blocked ? `数据或来源尚不完整，未签发完整三段报告。${job.candidate_digest ? '仅生成带显著限制标记的部分查看版。' : '尚未生成 PDF / PNG。'}预警正文未完成核验，不代表无预警。` : '确定性数据校验已通过。PDF / PNG 是 UNAPPROVED_REFERENCE 候选；图中文字与布局仍须独立逐页审核，不构成下水许可。';
+  const receipts = new Map();
+  for (const receipt of job.tide_receipts || []) {
+    const key = `${receipt.station_id}:${receipt.date}:${receipt.source_id || ''}:${receipt.status}`;
+    if (!receipts.has(key)) receipts.set(key, {receipt, sites:[]});
+    receipts.get(key).sites.push({haicang:'海沧湾',wuyuan:'五缘湾',huandong:'环东'}[receipt.site_id] || receipt.site_id);
+  }
+  const receiptPanel = $('tide-receipts'); receiptPanel.replaceChildren(); receiptPanel.hidden = !receipts.size;
+  if (receipts.size) {
+    const heading = document.createElement('h4'); heading.textContent='潮位原件状态'; receiptPanel.append(heading);
+    for (const {receipt, sites} of receipts.values()) {
+      const item=document.createElement('div');
+      const title=document.createElement('strong'); title.textContent=`${sites.join('、')} · ${receipt.station_id}`;
+      const detail=document.createElement('p'); detail.textContent=receipt.label;
+      item.append(title,detail);receiptPanel.append(item);
+    }
+  }
   $('gaps').replaceChildren();
   const issues = [...(job.validation?.errors || []), ...(job.validation?.warnings || [])];
   if (issues.length) {
@@ -83,7 +100,7 @@ function showResult(job) {
   const firstMap=tabs.find(tab=>tab.textContent.includes('地图'));
   const firstPng=tabs.find(tab=>tab.textContent.endsWith('PNG'));
   (firstMap || firstPng || $('preview-tabs').firstElementChild)?.click();
-  $('audit-json').textContent=JSON.stringify({state:job.validation?.state,run_id:job.run_id,candidate_digest:job.candidate_digest,analysis_provider:'none',sources:job.sources,validation:job.validation},null,2);
+  $('audit-json').textContent=JSON.stringify({state:job.validation?.state,run_id:job.run_id,candidate_digest:job.candidate_digest,analysis_provider:'none',tide_receipts:job.tide_receipts,sources:job.sources,validation:job.validation},null,2);
 }
 async function start(mode){
   if(busy)return;

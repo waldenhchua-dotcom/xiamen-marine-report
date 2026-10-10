@@ -1,5 +1,6 @@
 """Meaningful offline artifact, hourly-axis, direction and fail-closed tests."""
 
+import csv
 import math
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,13 +12,21 @@ from PIL import Image
 from pypdf import PdfReader
 
 from xiamen_marine_report.demo import generate_fixture
-from xiamen_marine_report.provenance import read_json, save_run, sha256_file, write_json
+from xiamen_marine_report.provenance import canonical_digest, read_json, save_run, sha256_file, write_json
 from xiamen_marine_report.render import render_run
-from xiamen_marine_report.render.charts import direction_vector, hourly_ticks, series_map, wind_from_name
+from xiamen_marine_report.render.charts import (
+    direction_vector,
+    hourly_ticks,
+    render_day_chart,
+    series_map,
+    wind_from_name,
+)
 from xiamen_marine_report.render.maps import _valid_point, coastline_land_cells, current_arrow_sample
-from xiamen_marine_report.render.style import FONT_PATH, status_label
+from xiamen_marine_report.render.pdf import _raw_tide_appendix, official_display
+from xiamen_marine_report.render.style import BLUE, FONT_PATH, configure_fonts, status_label
 from xiamen_marine_report.review import review_candidate, review_status, verify_candidate
 from xiamen_marine_report.sunset import sunset_for_date
+from xiamen_marine_report.tide_status import write_raw_tide_csv
 
 
 @pytest.fixture(scope="module")
@@ -157,7 +166,7 @@ def test_partial_single_site_is_explicit_and_never_awaiting_review(tmp_path):
     pdf = next(path.parent.glob("*.pdf"))
     assert "PARTIAL" in pdf.name
     text = "\n".join(page.extract_text() for page in PdfReader(pdf).pages)
-    assert "PARTIAL" in text and "未取得目标日正文" in text
+    assert "PARTIAL" in text and "目标日正文未取得" in text
     assert "SYNTHETIC" in status_label(manifest, True)
 
 
@@ -229,3 +238,105 @@ def test_rerender_creates_new_candidate_and_invalidates_old_detached_review(rend
     assert new["candidate_digest"] != original["candidate_digest"]
     assert review_status(run)["valid"] is False
     assert verify_candidate(run, old_path)[1]["candidate_digest"] == original["candidate_digest"]
+
+
+@pytest.fixture
+def native_render_fixture(tmp_path):
+    """Two hash-bound native mock tables; shared NT1405 is intentionally reused."""
+    day = "2026-10-11"
+    manifest = {"request_date": day, "synthetic": True, "analysis_provider": "none", "series": [],
+                "sources": [], "extrema": [], "quarantined_tides": [], "sites": []}
+    for site_id, station_id, name in (("haicang", "T122", "海沧湾"), ("wuyuan", "NT1405", "五缘湾"), ("huandong", "NT1405", "环东")):
+        manifest["sites"].append({"id": site_id, "name": name,
+                                  "target_point": {"latitude": 24.5, "longitude": 118.1},
+                                  "reference_station": {"id": station_id, "name": "合成原始表测试站",
+                                                        "timezone_verified": False, "datum": "合成 cm 基准面"}})
+    for station_id in ("T122", "NT1405"):
+        source_id = f"tide_{station_id}_{day}"
+        values = [100.0 + hour for hour in range(24)]
+        row = {f"a{hour}": value for hour, value in enumerate(values)}
+        row.update(Day=11, cs0="02:00", cg0=90, cs1="08:00", cg1=280, cs2="14:00", cg2=80, cs3="20:00", cg3=290)
+        payload = {"State": True, "Data": {"Site": {"Code": station_id, "Name": "mock native table", "CoordX": 118.1, "CoordY": 24.5},
+                    "Data": {"SiteCode": station_id, "Year": 2026, "Month": 10, "TimeArea": "-0800", "Benchmark": "mock datum"}, "SubData": row}}
+        file = f"evidence/{station_id}.json"
+        write_json(tmp_path / file, payload)
+        manifest["sources"].append({"id": source_id, "kind": "synthetic", "http_status": 200,
+                                    "file": file, "sha256": sha256_file(tmp_path / file),
+                                    "metadata": {"synthetic": True, "station_id": station_id, "request_day": day,
+                                                 "raw_time_area": "-0800", "transport_error": None}})
+        manifest["quarantined_tides"].append({"station_id": station_id, "request_day": day, "source_id": source_id,
+                                             "unit": "cm", "timezone_verified": False, "raw_time_area": "-0800",
+                                             "hourly_local_times": [f"{day}T{h:02d}:00" for h in range(24)], "hourly_values_cm": values})
+    return manifest, tmp_path
+
+
+def test_raw_tide_appendix_is_native_centimetres_deduped_and_bound(native_render_fixture):
+    from reportlab.pdfgen.canvas import Canvas
+    manifest, root = native_render_fixture
+    before = canonical_digest(manifest)
+    configure_fonts()
+    pdf = root / "raw-table.pdf"
+    canvas = Canvas(str(pdf))
+    assert _raw_tide_appendix(canvas, manifest, True, 1, run_dir=root) == 3
+    canvas.save()
+    reader = PdfReader(pdf)
+    assert len(reader.pages) == 2
+    texts = [page.extract_text() for page in reader.pages]
+    for text in texts:
+        assert "原件本地时间字段" in text and "时区未核实，未转换" in text
+        assert "北京时间 Asia/Shanghai" not in text
+        assert "2026-10-11T00:00" in text and "2026-10-11T23:00" in text
+        assert "100.0" in text and "123.0" in text and "原始潮高 (cm)" in text
+        assert "不转换北京时间，不计算涨潮区间" in text and "-0800" in text
+        assert "PARTIAL" in text and "UNAPPROVED_REFERENCE" in text
+    assert sum("tide_NT1405_2026-10-11" in text for text in texts) == 1
+    csv_path = write_raw_tide_csv(manifest, root / "raw.csv", run_dir=root)
+    with csv_path.open(encoding="utf-8", newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    assert len(rows) == 48 and all(r["timezone_verified"] == "false" for r in rows)
+    assert canonical_digest(manifest) == before
+
+
+def test_acquired_unverified_tide_chart_has_count_source_and_no_absolute_curve(native_render_fixture, monkeypatch):
+    import matplotlib.pyplot as plt
+    manifest, root = native_render_fixture
+    configure_fonts()
+    captured = []
+    original_close = plt.close
+    def capture(fig):
+        if hasattr(fig, "axes"):
+            captured.append(fig)
+        original_close(fig)
+    monkeypatch.setattr(plt, "close", capture)
+    tz = ZoneInfo("Asia/Shanghai")
+    render_day_chart(manifest, manifest["sites"][0], {}, datetime(2026, 10, 11, tzinfo=tz),
+                     datetime(2026, 10, 11, 23, tzinfo=tz), root / "chart.png", True, run_dir=root)
+    tide = captured[-1].axes[0]
+    text = "\n".join(t.get_text() for t in tide.texts)
+    assert "原始逐时潮位已取得（24 个值）" in text
+    assert "时区定义未核实，暂不按北京时间绘制" in text
+    assert "tide_T122_2026-10-11" in tide.get_title(loc="left")
+    assert not any(line.get_color() == BLUE for line in tide.lines)
+    assert len(tide.get_yticks()) == 0
+
+
+def test_official_acquisition_label_requires_nonempty_hash_bound_page(native_render_fixture):
+    manifest, root = native_render_fixture
+    file = root / "evidence" / "official.html"
+    file.write_bytes(b"<html><body>Unverified target-date page</body></html>")
+    source = {"id": "xiamen_official_forecast_page", "kind": "official", "http_status": 200,
+              "file": "evidence/official.html", "sha256": sha256_file(file),
+              "metadata": {"request_date": manifest["request_date"], "body_verified": False, "transport_error": None}}
+    manifest["sources"].append(source)
+    document = {"category": "marine_forecast", "status": "not_obtained", "source_id": None,
+                "request_date": manifest["request_date"]}
+    before = canonical_digest(manifest)
+    shown = official_display(manifest, document, run_dir=root)
+    assert "官方页面原件已取得" in shown["display_status"]
+    assert "核验未完成" in shown["display_status"] and shown["status"] == "not_obtained"
+    assert canonical_digest(manifest) == before
+    file.write_bytes(b"")
+    source["sha256"] = sha256_file(file)
+    assert "原件已取得" not in official_display(manifest, document, run_dir=root)["display_status"]
+    assert document["source_id"] is None
+    assert before != canonical_digest(manifest)  # Only this test's explicit source edit changed it.

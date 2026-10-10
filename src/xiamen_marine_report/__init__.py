@@ -1,4 +1,4 @@
 """Auditable Xiamen marine reports; reports do not authorize launching."""
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 

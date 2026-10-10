@@ -11,16 +11,17 @@ from PIL import Image, ImageDraw, ImageFont
 from ..provenance import load_manifest, sha256_file, write_json
 from ..review import candidate_digest
 from ..sunset import sunset_for_date
+from ..tide_status import tide_receipt, write_raw_tide_csv
 from ..validate import validate_run
 from .charts import coverage_window, day_windows, render_day_chart, series_map
 from .maps import grid_description, grid_inventory, load_map_bundle, map_sources_metadata, render_map
-from .pdf import render_pdf
+from .pdf import official_display, render_pdf
 from .style import FONT_BOLD_PATH, FONT_PATH, INK, MUTED, RED, configure_fonts, status_label
 
 __all__ = ["render_run"]
 
 
-def _source_index(manifest: dict, validation: dict) -> str:
+def _source_index(manifest: dict, validation: dict, *, run_dir=None) -> str:
     lines = [f"# 厦门三地海况来源索引 - {manifest['request_date']}", "",
              status_label(manifest, validation["state"] != "VALIDATED"), "",
              "所有数值来自本包的冻结原件；manifest.json 保留原始请求、时区、单位、格点和哈希。",
@@ -32,6 +33,19 @@ def _source_index(manifest: dict, validation: dict) -> str:
     lines.extend(["", "## 分钟级潮汐极值与原件的对应关系", ""])
     for item in manifest.get("extrema", []):
         lines.append(f"- {item['station_id']} / {item['time']} / {item['type']} / {item['height']} {item.get('unit', '未核实')}; datum={item.get('datum')}; source={item['source_id']}")
+    lines.extend(["", "## 原始潮位接收与时间可用性", ""])
+    seen_receipts = set()
+    for site in manifest["sites"]:
+        receipt = tide_receipt(manifest, site["id"], run_dir=run_dir)
+        key = (receipt["station_id"], receipt["request_date"])
+        if key in seen_receipts:
+            continue
+        seen_receipts.add(key)
+        lines.append(f"- {receipt['station_id']} / {receipt['request_date']}: {receipt['label']}; source={receipt.get('source_id')}; SHA-256={receipt.get('source_sha256')}")
+        if receipt["status"] == "received_unverified":
+            lines.append(f"  源内 TimeArea={receipt.get('raw_time_area')}；下列字符串按原件保留，不转换北京时间，不计算涨潮区间。")
+            for stamp, value in zip(receipt["native_timestamps"], receipt["heights_cm"], strict=True):
+                lines.append(f"  - {stamp}: {value} cm")
     for source in manifest.get("sources", []):
         lines.extend(["", f"## {source['id']}", "",
                       f"- 原件: {source.get('file')}", f"- SHA-256: {source.get('sha256')}",
@@ -63,7 +77,7 @@ def _wrap_pixels(text: str, font, width: int) -> list[str]:
     return lines
 
 
-def _summary_png(manifest: dict, site: dict, validation: dict, map_path: Path, partial: bool, width=2700):
+def _summary_png(manifest: dict, site: dict, validation: dict, map_path: Path, partial: bool, width=2700, *, run_dir=None):
     title_font = ImageFont.truetype(str(FONT_BOLD_PATH), 70)
     label_font = ImageFont.truetype(str(FONT_BOLD_PATH), 43)
     body_font = ImageFont.truetype(str(FONT_PATH), 34)
@@ -79,10 +93,15 @@ def _summary_png(manifest: dict, site: dict, validation: dict, map_path: Path, p
         ("未获独立审核；仅供证据复核。图表和预报不能证明现场可下水。", body_font, RED),
     ]
     station = site["reference_station"]
+    receipt = tide_receipt(manifest, site["id"], run_dir=run_dir)
     sections.extend([
         (f"参考潮位站 {station['name']} ({station['id']})；基准面 {station.get('datum') or '未核实'}。潮位不是湾内实测或水深；高潮不是憩流。", body_font, INK),
+        (f"原始潮位接收状态: {receipt['label']}；源 {receipt.get('source_id') or '未取得有效目标日源'}。", body_font,
+         RED if receipt["status"] != "verified" else INK),
         (f"目标点: WGS84 {site['target_point']['latitude']:.5f}, {site['target_point']['longitude']:.5f} (约)；来源 {site['target_point'].get('provenance') or '未核实'}；{site['target_point'].get('limitations') or '规划点不是获授权的下水口'}", small_font, MUTED),
     ])
+    if receipt["status"] == "received_unverified":
+        sections.append((f"源内 TimeArea={receipt.get('raw_time_area')}；原始本地时间字符串及 cm 值已保留至 PDF 原始潮位附录/CSV。时区定义未核实，不转换北京时间，不计算涨潮区间。", small_font, RED))
     for index, segment in enumerate(coverage.get("segments", []), 1):
         low, high = segment["low"], segment["high"]
         lt, ht = datetime.fromisoformat(low["time"]), datetime.fromisoformat(high["time"])
@@ -113,16 +132,22 @@ def _summary_png(manifest: dict, site: dict, validation: dict, map_path: Path, p
     for category, title in (("warning", "官方预警"), ("marine_forecast", "官方海洋预报")):
         found = [d for d in docs if d["category"] == category]
         if not found:
-            sections.append((f"{title}: 未取得目标日正文，状态未确认。空列表或取数失败不能解释为无预警。", body_font, RED))
+            shown = official_display(manifest, {"category": category, "status": "not_obtained", "request_date": manifest["request_date"]}, run_dir=run_dir)
+            sections.append((f"{title}: {shown['display_status']}；{shown['summary']}；页面原件源 {shown.get('source_id') or '未取得'}", body_font, RED))
         for d in found:
-            sections.append((f"{title}: {d['status']}；{d.get('title') or '正文未取得'}；发布 {d.get('published_at') or '未核实'}；有效 {d.get('valid_from') or '未核实'} 至 {d.get('valid_to') or '未核实'}；{d.get('summary') or '未确认'}；源 {d.get('source_id') or '未取得'}", small_font, INK if d["status"] == "verified" else RED))
+            shown = official_display(manifest, d, run_dir=run_dir)
+            sections.append((f"{title}: {shown['display_status']}；{shown.get('title') or '正文未取得'}；发布 {shown.get('published_at') or '未核实'}；有效 {shown.get('valid_from') or '未核实'} 至 {shown.get('valid_to') or '未核实'}；{shown.get('summary') or '未确认'}；页面/正文源 {shown.get('source_id') or '未取得'}", small_font, INK if d["status"] == "verified" else RED))
     for error in validation.get("errors", []) + validation.get("warnings", []):
         if not isinstance(error, dict) or error.get("site_id") in (None, site["id"]):
             sections.append((f"校验缺口: {error}", small_font, RED))
     sections.append(("冻结来源与抓取时间 (UTC)；完整参数、单位、有效期和哈希见随附 sources.md/manifest.json", label_font, INK))
     used = {s["source_id"] for s in mapping.values()}
     used.update(d.get("source_id") for d in docs)
+    for document in docs:
+        used.update(official_display(manifest, document, run_dir=run_dir).get("display_source_ids", []))
     used.update(e.get("source_id") for e in manifest.get("extrema", []) if e["station_id"] == station["id"])
+    if receipt.get("source_id"):
+        used.add(receipt["source_id"])
     for source in manifest.get("sources", []):
         if source["id"] in used:
             sections.append((f"{source['id']}: {source.get('kind')}；UTC {source.get('retrieved_at')}；{source.get('request', {}).get('url')}；SHA-256 {source.get('sha256')}；许可 {source.get('license')}；元数据 {json.dumps(source.get('metadata'), ensure_ascii=False, sort_keys=True)}", small_font, MUTED))
@@ -203,11 +228,11 @@ def render_run(run_dir: Path, output_dir: Path, *, allow_partial: bool = False) 
         for begin, finish in day_windows(start, end):
             sunsets.append(sunset_for_date(site, begin.date()))
             charts.append(render_day_chart(manifest, site, validation.get("coverage", {}), begin, finish,
-                                          build_dir / f"{site['id']}_{begin.date()}.png", partial))
+                                          build_dir / f"{site['id']}_{begin.date()}.png", partial, run_dir=run_dir))
         assets[site["id"]] = {"map": map_path, "charts": charts}
-        summary = _summary_png(manifest, site, validation, map_path, partial)
+        summary = _summary_png(manifest, site, validation, map_path, partial, run_dir=run_dir)
         _combined_png(summary, charts, candidate_dir / f"{manifest['request_date']}_{site['id']}_{suffix}.png")
-    render_pdf(manifest, validation, assets, candidate_dir / f"{manifest['request_date']}_xiamen_{suffix}.pdf", partial)
+    render_pdf(manifest, validation, assets, candidate_dir / f"{manifest['request_date']}_xiamen_{suffix}.pdf", partial, run_dir=run_dir)
     shutil.copyfile(run_dir / "manifest.json", candidate_dir / "manifest.json")
     for source in manifest.get("sources", []):
         dest = candidate_dir / source["file"]
@@ -215,8 +240,9 @@ def render_run(run_dir: Path, output_dir: Path, *, allow_partial: bool = False) 
         shutil.copyfile(run_dir / source["file"], dest)
     write_json(candidate_dir / "validation.json", validation)
     write_json(candidate_dir / "sunsets.json", sunsets)
+    write_raw_tide_csv(manifest, candidate_dir / f"{manifest['request_date']}_raw_tide_UNVERIFIED_TIMEZONE.csv", run_dir=run_dir)
     write_json(candidate_dir / "map_sources.json", map_sources_metadata(manifest, map_bundle))
-    (candidate_dir / "sources.md").write_text(_source_index(manifest, validation), encoding="utf-8")
+    (candidate_dir / "sources.md").write_text(_source_index(manifest, validation, run_dir=run_dir), encoding="utf-8")
     # Known, locally created build directory only; no user paths are recursively removed.
     shutil.rmtree(build_dir)
     map_files = {Path(item["map"]).name: site_id for site_id, item in assets.items()}

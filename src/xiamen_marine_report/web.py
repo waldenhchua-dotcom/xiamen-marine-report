@@ -16,6 +16,7 @@ from urllib.parse import unquote, urlsplit
 
 from .models import parse_date
 from .provenance import load_manifest, read_json, write_json
+from .tide_status import tide_receipt
 from .validate import validate_run
 
 ASSETS = Path(__file__).parent / "web_assets"
@@ -130,6 +131,7 @@ class JobStore:
                          else "关键证据未通过；请查看缺口", validation=validation,
                          run_id=manifest["run_id"], synthetic=manifest["synthetic"],
                          source_count=len(manifest["sources"]), series_count=len(manifest["series"]),
+                         tide_receipts=[tide_receipt(manifest, site["id"], run_dir=run) for site in manifest["sites"]],
                          files=files, _paths=paths, candidate_digest=candidate.get("candidate_digest") if candidate else None,
                          sources=[{"id": source["id"], "kind": source.get("kind"),
                                    "http_status": source.get("http_status"), "sha256": source.get("sha256"),

@@ -37,7 +37,7 @@
 
     <section class="report-space" aria-labelledby="workspace-title">
       <div class="section-title"><div><p class="eyebrow">证据工作台</p><h2 id="workspace-title">三处水域，一份可追溯的报告。</h2></div><span class="format">PDF + PNG + 地图</span></div>
-      <div class="status-line" role="status" aria-live="polite"><span class="status-mark" id="status-mark"></span><strong id="status-title">等待选择日期</strong><span id="status-detail">所有时间统一显示为北京时间</span></div>
+      <div class="status-line" role="status" aria-live="polite"><span class="status-mark" id="status-mark"></span><strong id="status-title">等待选择日期</strong><span id="status-detail">已核实时间按北京时间显示；未核时区的原始时间保留原串</span></div>
       <div class="pipeline" aria-label="报告流程"><span id="stage-fetch">获取原始证据</span><span id="stage-validate">核验完整覆盖</span><span id="stage-render">生成候选报告</span><span>独立审核</span></div>
       <section id="empty-state" class="empty-state">
         <div class="empty-heading"><span class="sheet-number">3</span><div><h3>报告从来源开始。</h3><p>选择左侧日期，然后自动获取数据。<br>想先看报告效果，可运行离线合成演示。</p></div></div>
@@ -50,11 +50,12 @@
           <div><strong>当地日落</strong><span>天文算法估算 · 各水域各日期</span><span>随报告计算</span></div>
           <div><strong>位置地图</strong><span>OpenStreetMap · 静态海岸与道路底图</span><span>随报告绘制</span></div>
         </div>
-        <p class="evidence-note">预报是模型结果。未取得预警正文，不代表没有预警。</p>
+        <p class="evidence-note">预报是模型结果。预警正文未核验，不代表没有预警。</p>
       </section>
       <section id="result" hidden>
         <div class="result-summary"><div><span id="data-label">冻结证据</span><h3 id="result-heading">报告结果</h3></div><div class="metrics"><div><strong id="source-count">0</strong><span>来源对象</span></div><div><strong id="series-count">0</strong><span>逐时序列</span></div></div></div>
         <div id="validation-message" class="validation-message"></div>
+        <section id="tide-receipts" class="tide-receipts" aria-label="潮位原件状态" hidden></section>
         <div id="gaps"></div>
         <div id="downloads" class="downloads"></div>
         <div class="preview-tabs" id="preview-tabs"></div>

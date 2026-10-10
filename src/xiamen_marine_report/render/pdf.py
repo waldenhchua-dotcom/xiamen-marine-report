@@ -11,9 +11,11 @@ from reportlab.lib.pagesizes import A3, A4, landscape
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen.canvas import Canvas
-from reportlab.platypus import Paragraph
+from reportlab.platypus import Paragraph, Table, TableStyle
 
+from ..provenance import safe_relative_path, sha256_file
 from ..sunset import sunset_for_date
+from ..tide_status import tide_receipt
 from .charts import coverage_window, day_windows, series_map
 from .maps import grid_description, grid_inventory
 from .style import BLUE, FONT_BOLD_NAME, FONT_NAME, INK, MUTED, RED, status_label
@@ -29,14 +31,14 @@ def _paragraph(canvas, text: str, x: float, y: float, width: float, size: float 
     return y - height
 
 
-def _page_header(canvas, manifest, partial, title, width, height):
+def _page_header(canvas, manifest, partial, title, width, height, *, time_label="北京时间 Asia/Shanghai (+08:00)"):
     canvas.setFillColor(colors.HexColor(INK))
     canvas.rect(0, height - 62, width, 62, fill=1, stroke=0)
     canvas.setFont(FONT_NAME, 20)
     canvas.setFillColor(colors.white)
     canvas.drawString(36, height - 33, title)
     canvas.setFont(FONT_NAME, 9)
-    canvas.drawString(36, height - 51, f"目标日期 {manifest['request_date']} | 北京时间 Asia/Shanghai (+08:00)")
+    canvas.drawString(36, height - 51, f"目标日期 {manifest['request_date']} | {time_label}")
     _paragraph(canvas, status_label(manifest, partial), 36, height - 77, width - 72, 12, RED, bold=True)
 
 
@@ -60,7 +62,41 @@ def _stat(mapping: dict, variable: str, start, end) -> str:
     return f"{peak[1]:.2f} {series['unit']} @ {peak[0]:%m-%d %H:%M}"
 
 
-def _overview_pages(canvas: Canvas, manifest, site, validation, map_path, partial, number):
+def official_display(manifest: dict, document: dict, *, run_dir=None) -> dict:
+    """Distinguish an acquired page from a verified exact-date official body."""
+    display = dict(document)
+    if document.get("status") == "verified":
+        display["display_status"] = "verified"
+        return display
+    expected_ids = {"warning": {"xiamen_official_index"},
+                    "marine_forecast": {"xiamen_official_forecast_page"}}.get(document.get("category"), set())
+    if document.get("source_id"):
+        expected_ids = expected_ids | {document["source_id"]}
+    def source_bound(source):
+        if run_dir is None or source.get("metadata", {}).get("transport_error"):
+            return False
+        try:
+            path = safe_relative_path(run_dir, source["file"])
+            return path.is_file() and bool(path.read_bytes().strip()) and sha256_file(path) == source["sha256"]
+        except (KeyError, OSError, TypeError, ValueError):
+            return False
+    sources = [s for s in manifest.get("sources", [])
+               if s.get("kind") == "official" and s.get("http_status") == 200
+               and (s["id"] in expected_ids or s.get("metadata", {}).get("category") == document.get("category"))
+               and s.get("metadata", {}).get("request_date", document.get("request_date")) == document.get("request_date", manifest["request_date"])
+               and source_bound(s)]
+    if document.get("status") == "not_obtained" and sources:
+        display.update(display_status="官方页面原件已取得；目标日正文、有效时段及海区覆盖核验未完成",
+                       title="官方页面原件已取得，目标日核验未完成",
+                       summary="页面下载不等于正文核验；预警正文未完成核验，不得解释为无预警。",
+                       source_id="、".join(s["id"] for s in sources), display_source_ids=[s["id"] for s in sources])
+    else:
+        display.update(display_status="经核验目标日正文未取得", title="经核验目标日正文未取得",
+                       summary="未确认，不能将正文未取得解释为没有预警。")
+    return display
+
+
+def _overview_pages(canvas: Canvas, manifest, site, validation, map_path, partial, number, *, run_dir=None):
     width, height = A4
     canvas.setPageSize(A4)
     _page_header(canvas, manifest, partial, f"{site['name']} · 三段涨潮证据概览", width, height)
@@ -74,6 +110,9 @@ def _overview_pages(canvas: Canvas, manifest, site, validation, map_path, partia
     station = site["reference_station"]
     y = _paragraph(canvas, f"参考潮位站: {station['name']} ({station['id']}) | 基准面: {station.get('datum') or '未核实'}\n"
                    "潮位是参考站预报/证据值，不是湾内实测、水深或潮流。高潮不是憩流。", 36, y, width - 72, 10) - 12
+    receipt = tide_receipt(manifest, site["id"], run_dir=run_dir)
+    y = _paragraph(canvas, f"原始潮位接收状态: {receipt['label']} | 源: {receipt.get('source_id') or '未取得有效目标日源'}",
+                   36, y, width - 72, 9, RED if receipt["status"] != "verified" else INK) - 8
     for index, segment in enumerate(coverage.get("segments", []), 1):
         low, high = segment["low"], segment["high"]
         lt, ht = datetime.fromisoformat(low["time"]), datetime.fromisoformat(high["time"])
@@ -119,10 +158,11 @@ def _overview_pages(canvas: Canvas, manifest, site, validation, map_path, partia
         if not docs:
             docs = [{"status": "not_obtained", "title": "未取得目标日正文", "summary": "未确认，不能解释为没有预警。"}]
         for doc in docs:
-            text = (f"{label}: {doc['status']} | {doc.get('title') or '未取得'}\n"
-                    f"目标日: {doc.get('request_date') or manifest['request_date']}; 发布: {doc.get('published_at') or '未核实'}\n"
-                    f"有效: {doc.get('valid_from') or '未核实'} 至 {doc.get('valid_to') or '未核实'}\n"
-                    f"{doc.get('summary') or '正文未确认'} | 源: {doc.get('source_id') or '未取得'}")
+            shown = official_display(manifest, {"category": category, **doc}, run_dir=run_dir)
+            text = (f"{label}: {shown['display_status']} | {shown.get('title') or '未取得'}\n"
+                    f"目标日: {shown.get('request_date') or manifest['request_date']}; 发布: {shown.get('published_at') or '未核实'}\n"
+                    f"有效: {shown.get('valid_from') or '未核实'} 至 {shown.get('valid_to') or '未核实'}\n"
+                    f"{shown.get('summary') or '正文未确认'} | 页面/正文源: {shown.get('source_id') or '未取得'}")
             needed = 105
             if y < needed + 60:
                 _footer(canvas, manifest, number, width)
@@ -139,14 +179,57 @@ def _overview_pages(canvas: Canvas, manifest, site, validation, map_path, partia
     return number + 1
 
 
-def render_pdf(manifest: dict, validation: dict, site_assets: dict, destination: Path, partial: bool) -> Path:
+def _raw_tide_appendix(canvas, manifest, partial, page_number, *, run_dir=None):
+    """Native strings and centimetre values; one page per unique station/date."""
+    seen = set()
+    for site in manifest["sites"]:
+        receipt = tide_receipt(manifest, site["id"], run_dir=run_dir)
+        key = (receipt["station_id"], receipt["request_date"])
+        if key in seen or receipt["status"] != "received_unverified":
+            continue
+        seen.add(key)
+        width, height = A4
+        canvas.setPageSize(A4)
+        _page_header(canvas, manifest, partial, f"原始潮位表 · {receipt['station_id']} · 时区未核实", width, height,
+                     time_label="原件本地时间字段（时区未核实，未转换）")
+        y = height - 112
+        y = _paragraph(canvas,
+                       f"请求日 {receipt['request_date']} | 参考站 {receipt['station_id']} | 已取得 {receipt['count']} 个原始逐时值\n"
+                       f"源内 TimeArea 原值: {receipt.get('raw_time_area')}\n"
+                       "时区定义未核实，不转换北京时间，不计算涨潮区间。以下时间字符串与 cm 数值按冻结原件保留；不是可用绝对潮时结论。",
+                       36, y, width - 72, 10, RED, bold=True) - 12
+        source_id = receipt.get("source_id")
+        source = next(s for s in manifest["sources"] if s["id"] == source_id)
+        y = _paragraph(canvas, f"原件源: {source_id}\n文件: {source['file']}\nSHA-256: {receipt.get('source_sha256')}\n"
+                       "请求与抓取时间见本报告来源索引；完整冻结原件、哈希及 CSV 随候选文件保存。", 36, y, width - 72, 8) - 10
+        rows = [["源内本地时间字符串（未赋时区）", "原始潮高 (cm)"]]
+        rows.extend([[stamp, str(value)] for stamp, value in
+                     zip(receipt["native_timestamps"], receipt["heights_cm"], strict=True)])
+        table = Table(rows, colWidths=[width - 205, 133], rowHeights=[22] + [17] * (len(rows) - 1))
+        table.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (-1, -1), FONT_NAME), ("FONTNAME", (0, 0), (-1, 0), FONT_BOLD_NAME),
+            ("FONTSIZE", (0, 0), (-1, -1), 9), ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor(INK)),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e5eff3")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f5f8fa")]),
+            ("GRID", (0, 0), (-1, -1), .35, colors.HexColor("#c6d5dc")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LEFTPADDING", (0, 0), (-1, -1), 9),
+        ]))
+        _, table_height = table.wrap(width - 72, y - 50)
+        table.drawOn(canvas, 36, y - table_height)
+        _footer(canvas, manifest, page_number, width)
+        canvas.showPage()
+        page_number += 1
+    return page_number
+
+
+def render_pdf(manifest: dict, validation: dict, site_assets: dict, destination: Path, partial: bool, *, run_dir=None) -> Path:
     canvas = Canvas(str(destination), pagesize=A4, pageCompression=1)
     canvas.setTitle(f"厦门三地海况 {manifest['request_date']} UNAPPROVED_REFERENCE")
     canvas.setAuthor("xiamen-marine-report deterministic renderer; analysis_provider=none")
     page_number = 1
     for site in manifest["sites"]:
         assets = site_assets[site["id"]]
-        page_number = _overview_pages(canvas, manifest, site, validation, assets["map"], partial, page_number)
+        page_number = _overview_pages(canvas, manifest, site, validation, assets["map"], partial, page_number, run_dir=run_dir)
         width, height = landscape(A3)
         canvas.setPageSize(landscape(A3))
         _page_header(canvas, manifest, partial, f"{site['name']} · 海岸、道路与证据点地图", width, height)
@@ -172,6 +255,7 @@ def render_pdf(manifest: dict, validation: dict, site_assets: dict, destination:
                     _footer(canvas, manifest, page_number, width)
                     canvas.showPage()
                     page_number += 1
+    page_number = _raw_tide_appendix(canvas, manifest, partial, page_number, run_dir=run_dir)
     width, height = A4
     canvas.setPageSize(A4)
     _page_header(canvas, manifest, partial, "来源、取证时间与校验缺口", width, height)

@@ -12,6 +12,7 @@ import numpy as np
 
 from ..models import EXPECTED_UNITS
 from ..sunset import sunset_for_date
+from ..tide_status import tide_receipt
 from .style import AMBER, BLUE, INK, MUTED, PALE, RED, TEAL, status_label
 
 TZ = ZoneInfo("Asia/Shanghai")
@@ -153,7 +154,7 @@ def _direction_row(ax, mapping, direction, speed, convention, ticks, start, end)
 
 
 def render_day_chart(manifest: dict, site: dict, coverage: dict, start: datetime,
-                     end: datetime, destination: Path, partial: bool) -> Path:
+                     end: datetime, destination: Path, partial: bool, *, run_dir=None) -> Path:
     """Nine aligned rows; every available clock hour gets an explicit tick."""
     mapping = series_map(manifest, site["id"])
     fig, axes = plt.subplots(9, 1, figsize=(15, 14), sharex=True,
@@ -184,14 +185,38 @@ def render_day_chart(manifest: dict, site: dict, coverage: dict, start: datetime
             if low <= end and high >= start:
                 ax.axvspan(max(low, start), min(high, end), color=PALE, alpha=.9, zorder=0)
     tide = axes[0]
-    _plot_line(tide, mapping, "tide_height", start, end, BLUE, "原始逐时潮位")
+    receipt = tide_receipt(manifest, site["id"], start.date().isoformat(), run_dir=run_dir)
+    normalized = mapping.get("tide_height") or {}
+    normalized_times, normalized_values = _samples(normalized, start, end)
+    # A fully validated report may end partway through its final date: that
+    # legitimate slice must retain its verified curve even though it is not 24h.
+    base_receipt = tide_receipt(manifest, site["id"], run_dir=run_dir)
+    plot_verified = receipt["status"] == "verified" or (not partial and base_receipt["status"] == "verified" and normalized_times
+                     and not normalized.get("render_suppressed") and site["reference_station"].get("timezone_verified") is True
+                     and all(math.isfinite(value) for value in normalized_values))
+    if plot_verified:
+        _plot_line(tide, mapping, "tide_height", start, end, BLUE, "原始逐时潮位")
+        tide.set_ylabel("潮位 (m)")
+    else:
+        if receipt["status"] == "received_unverified":
+            message = (f"原始逐时潮位已取得（{receipt['count']} 个值）\n"
+                       "时区定义未核实，暂不按北京时间绘制")
+        else:
+            message = receipt["label"]
+        tide.text(.5, .45, message, transform=tide.transAxes, ha="center", va="center", fontsize=12,
+                  color=RED, linespacing=1.6)
+        tide.set_yticks([])
+        tide.set_ylabel("潮位暂不绘制")
     station = site["reference_station"]
-    tide.set_ylabel("潮位 (m)")
+    tide_source_note = (_source_note(mapping, ("tide_height",)) if not receipt.get("source_id") else
+                        f"原始潮表源: {receipt['source_id']}"
+                        + (f" | 源内 TimeArea={receipt.get('raw_time_area')}；未转换原始 cm 值见 PDF 附录"
+                           if receipt["status"] == "received_unverified" else ""))
     tide.set_title(f"参考站 {station['name']} ({station['id']}) | 基准面: {station.get('datum') or '未核实'}\n"
-                   + _source_note(mapping, ("tide_height",)), loc="left", fontsize=10, color=MUTED)
+                   + tide_source_note, loc="left", fontsize=10, color=MUTED)
     for item in manifest.get("extrema", []):
         t = datetime.fromisoformat(item["time"])
-        if station.get("timezone_verified") is True and item["station_id"] == station["id"] and start <= t <= end:
+        if plot_verified and station.get("timezone_verified") is True and item["station_id"] == station["id"] and start <= t <= end:
             height = item["height"]
             tide.scatter(t, height, color=AMBER, zorder=4, s=30)
             high = item["type"] == "high"
