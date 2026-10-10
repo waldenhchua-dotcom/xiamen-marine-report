@@ -29,6 +29,8 @@ REVIEW_CHECKLIST = (
     "three_flood_segments_cross_day_coverage", "tide_and_current_distinction",
     "all_pdf_pages_and_three_pngs_readable",
 )
+MAP_REVIEW_CHECKLIST = ("map_images_and_source_attribution",)
+ARTIFACT_KINDS = ("pdf", "png", "map_png", "map_metadata", "evidence", "index")
 
 
 def parse_date(value: str) -> date:

@@ -9,6 +9,7 @@ from .config import ProviderSettings, parse_request_date, selected_sites
 from .coverage import hourly_end, select_flood_segments
 from .provenance import save_run
 from .providers.evidence import load_evidence
+from .providers.maps import load_basemap_sources
 from .providers.marine import fetch_marine
 from .providers.official import fetch_official
 from .providers.tide import fetch_tides
@@ -41,6 +42,11 @@ def fetch_run(request_date: str, site_ids: list[str], output_root: Path, *,
                         "open_meteo_access": "commercial" if settings.commercial else "noncommercial"},
     }
     raw_objects = {}
+    # Geographic evidence is bundled and frozen into each run. Rendering never
+    # fetches public map tiles or mutates this provenance after validation.
+    map_sources, map_raw = load_basemap_sources()
+    manifest["sources"].extend(map_sources)
+    raw_objects.update(map_raw)
     imported = None
     if evidence_dir is not None:
         imported, imported_raw = load_evidence(Path(evidence_dir), request_date, site_ids)

@@ -1,6 +1,7 @@
 """Scan release files for credential shapes and private machine paths."""
 from __future__ import annotations
 
+import gzip
 import re
 import subprocess
 import sys
@@ -31,7 +32,8 @@ def main() -> int:
         if not path.is_file() or path.suffix.lower() in {".ttf", ".png", ".pdf", ".zip", ".pyc"}:
             continue
         try:
-            content = path.read_text(encoding="utf-8")
+            content = (gzip.decompress(path.read_bytes()).decode("utf-8")
+                       if path.suffix.lower() == ".gz" else path.read_text(encoding="utf-8"))
         except UnicodeError:
             continue
         for pattern in PATTERNS:

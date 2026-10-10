@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .models import REVIEW_CHECKLIST, parse_time
+from .models import MAP_REVIEW_CHECKLIST, REVIEW_CHECKLIST, parse_time
 from .provenance import (
     canonical_digest,
     load_manifest,
@@ -20,6 +20,66 @@ from .validate import validate_run
 def candidate_digest(candidate: dict[str, Any]) -> str:
     return canonical_digest({"manifest_sha256": candidate["manifest_sha256"],
                              "artifacts": sorted(candidate["artifacts"], key=lambda item: item["file"])})
+
+
+def candidate_requires_maps(manifest: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    """Frozen map evidence makes map outputs mandatory even if their kinds are edited."""
+    return (candidate.get("maps_required") is True
+            or any(source.get("kind") in {"map", "cartographic"} for source in manifest.get("sources", [])
+                   if isinstance(source, dict))
+            or any(artifact.get("kind") in {"map_png", "map_metadata"} or artifact.get("role") == "map"
+                   or artifact.get("file") == "map_sources.json"
+                   for artifact in candidate.get("artifacts", []) if isinstance(artifact, dict)))
+
+
+def _verify_map_artifacts(path: Path, manifest: dict[str, Any], candidate: dict[str, Any]) -> None:
+    if not candidate_requires_maps(manifest, candidate):
+        return
+    from PIL import Image
+
+    artifacts = candidate["artifacts"]
+    selected_sites = {site["id"] for site in manifest["sites"]}
+    maps = [artifact for artifact in artifacts if artifact.get("kind") == "map_png"]
+    if len(maps) != len(selected_sites) or {artifact.get("site_id") for artifact in maps} != selected_sites:
+        raise ValueError("Map candidate must retain exactly one independent map PNG per selected site")
+    comprehensive = [artifact for artifact in artifacts if artifact.get("kind") == "png"]
+    if len(comprehensive) != len(selected_sites) or sum(artifact.get("kind") == "pdf" for artifact in artifacts) != 1:
+        raise ValueError("Map candidate must retain one combined PDF and every comprehensive PNG")
+    metadata = [artifact for artifact in artifacts if artifact.get("kind") == "map_metadata"]
+    if len(metadata) != 1:
+        raise ValueError("Map candidate requires one hash-bound map metadata artifact")
+    if not isinstance(read_json(safe_relative_path(path.parent, metadata[0]["file"])), (dict, list)):
+        raise ValueError("Map metadata must be structured JSON")
+    sources = {source["id"]: source for source in manifest["sources"]}
+    copied = {artifact["file"]: artifact for artifact in artifacts}
+    for artifact in maps:
+        if artifact.get("role") != "map":
+            raise ValueError("Independent map PNG must have the map role")
+        source_id = artifact.get("map_source_id")
+        if source_id not in sources or sources[source_id].get("kind") not in {"map", "cartographic"}:
+            raise ValueError("Independent map PNG requires a frozen map source binding")
+        source = sources[source_id]
+        source_metadata = source.get("metadata", {})
+        if source_metadata.get("crs") != "WGS84" or not source_metadata.get("time_convention") or not source.get("license"):
+            raise ValueError("Map source must document WGS84, static timing and license/attribution")
+        parse_time(source.get("retrieved_at", ""))
+        original_id = source_metadata.get("original_source_id")
+        chain = [source]
+        if original_id is not None:
+            if original_id not in sources or sources[original_id].get("kind") not in {"map", "cartographic"}:
+                raise ValueError("Derived map source requires its frozen original map response")
+            chain.append(sources[original_id])
+        for evidence in chain:
+            artifact_copy = copied.get(evidence.get("file"))
+            if artifact_copy is None or artifact_copy.get("sha256") != evidence.get("sha256"):
+                raise ValueError("Map candidate must include hash-bound original and derived map evidence")
+        try:
+            with Image.open(safe_relative_path(path.parent, artifact["file"])) as image:
+                if image.format != "PNG" or image.width < 1200 or image.height < 600:
+                    raise ValueError("Map PNG must be a readable high-resolution PNG")
+                image.verify()
+        except OSError as exc:
+            raise ValueError("Map PNG structure is invalid") from exc
 
 
 def _candidate_path(run_dir: Path, candidate_path: Path | str | None) -> Path:
@@ -57,8 +117,10 @@ def verify_candidate(run_dir: Path | str, candidate_path: Path | str | None = No
             raise ValueError("Candidate artifact changed; old review is invalid")
     if candidate.get("candidate_digest") != candidate_digest(candidate):
         raise ValueError("Candidate digest changed; old review is invalid")
-    if candidate.get("request_date") != load_manifest(run_dir).get("request_date"):
+    manifest = load_manifest(run_dir)
+    if candidate.get("request_date") != manifest.get("request_date"):
         raise ValueError("Candidate request date does not match frozen evidence")
+    _verify_map_artifacts(path, manifest, candidate)
     return path, candidate
 
 
@@ -82,6 +144,9 @@ def _validate_review_input(review: dict[str, Any], manifest: dict[str, Any], can
         raise ValueError("Review checklist must be a JSON object")
     if decision == "approve" and any(checklist.get(key) is not True for key in REVIEW_CHECKLIST):
         raise ValueError("Approval requires every independent checklist item checked true")
+    if decision == "approve" and candidate_requires_maps(manifest, candidate):
+        if any(checklist.get(key) is not True for key in MAP_REVIEW_CHECKLIST):
+            raise ValueError("Approval requires independent map images and source attribution review")
 
 
 def review_candidate(run_dir: Path | str, decision: str, review_file: Path | str,

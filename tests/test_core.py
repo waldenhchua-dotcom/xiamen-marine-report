@@ -10,8 +10,9 @@ import pytest
 
 from xiamen_marine_report.cli import main
 from xiamen_marine_report.coverage import hourly_end, select_flood_segments
-from xiamen_marine_report.demo import generate_fixture, load_fixture
-from xiamen_marine_report.models import REQUIRED_VARIABLES, REVIEW_CHECKLIST
+from xiamen_marine_report.demo import generate_fixture as generate_complete_fixture
+from xiamen_marine_report.demo import load_fixture
+from xiamen_marine_report.models import MAP_REVIEW_CHECKLIST, REQUIRED_VARIABLES, REVIEW_CHECKLIST
 from xiamen_marine_report.provenance import (
     load_manifest,
     read_json,
@@ -22,8 +23,13 @@ from xiamen_marine_report.provenance import (
     sha256_file,
     write_json,
 )
-from xiamen_marine_report.review import candidate_digest, review_candidate, review_status
+from xiamen_marine_report.review import candidate_digest, review_candidate, review_status, verify_candidate
 from xiamen_marine_report.validate import validate_run
+
+
+def generate_fixture(date: str = "2026-10-10") -> dict:
+    """Core regressions isolate marine contracts; map integration tests use full fixtures."""
+    return generate_complete_fixture(date, include_maps=False)
 
 
 @pytest.fixture
@@ -64,6 +70,58 @@ def checklist_file(run: Path, record: dict) -> Path:
     return path
 
 
+def map_candidate(run: Path) -> tuple[Path, dict]:
+    """Small real PNG structures and mock source bytes isolate the map review gate."""
+    from PIL import Image
+
+    manifest = load_manifest(run)
+    for source_id, original in (("map-test-original", None), ("map-test-derived", "map-test-original")):
+        evidence = run / "evidence" / f"{source_id}.json"
+        write_json(evidence, {"test_only": True, "type": "FeatureCollection", "features": []})
+        metadata = {"crs": "WGS84", "time_convention": "Static mock snapshot; no forecast validity"}
+        if original:
+            metadata["original_source_id"] = original
+        manifest["sources"].append({"id": source_id, "file": evidence.relative_to(run).as_posix(),
+                                    "sha256": sha256_file(evidence), "retrieved_at": "2026-10-10T00:00:00Z",
+                                    "request": {"url": "https://maps.example.org/test-only", "params": {}},
+                                    "http_status": 200, "kind": "map", "metadata": metadata,
+                                    "license": "Mock ODbL provenance for tests, not a real geographic dataset"})
+    write_json(run / "manifest.json", manifest)
+    path, record = candidate(run)
+    directory = path.parent
+    record["maps_required"] = True
+    for site in manifest["sites"]:
+        site_id = site["id"]
+        if site_id != "haicang":
+            png = directory / f"{site_id}_comprehensive.png"
+            png.write_bytes(b"test comprehensive placeholder")
+            record["artifacts"].append({"file": png.name, "sha256": sha256_file(png), "kind": "png"})
+        png = directory / f"{site_id}_map.png"
+        Image.new("RGB", (1200, 600), "white").save(png)
+        record["artifacts"].append({"file": png.name, "sha256": sha256_file(png), "kind": "map_png",
+                                    "role": "map", "site_id": site_id, "map_source_id": "map-test-derived"})
+    pdf = directory / "combined.pdf"
+    pdf.write_bytes(b"%PDF-1.4 test placeholder")
+    record["artifacts"].append({"file": pdf.name, "sha256": sha256_file(pdf), "kind": "pdf"})
+    metadata_path = directory / "map_sources.json"
+    write_json(metadata_path, {"maps": [{"site_id": site["id"], "source_id": "map-test-derived"}
+                                        for site in manifest["sites"]]})
+    record["artifacts"].append({"file": metadata_path.name, "sha256": sha256_file(metadata_path), "kind": "map_metadata"})
+    for source in manifest["sources"][-2:]:
+        copied = directory / source["file"]
+        copied.parent.mkdir(parents=True, exist_ok=True)
+        copied.write_bytes((run / source["file"]).read_bytes())
+        record["artifacts"].append({"file": source["file"], "sha256": source["sha256"], "kind": "evidence"})
+    record["candidate_digest"] = candidate_digest(record)
+    write_json(path, record)
+    return path, record
+
+
+def write_changed_candidate(path: Path, record: dict) -> None:
+    record["candidate_digest"] = candidate_digest(record)
+    write_json(path, record)
+
+
 def test_fixture_full_cross_day_distinct_station_coverage(frozen_run: Path):
     result = validate_run(frozen_run)
     assert result["state"] == "VALIDATED", result["errors"]
@@ -79,6 +137,8 @@ def test_fixture_file_is_offline_and_synthetic():
     assert fixture["manifest"]["synthetic"] is True
     assert len(fixture["manifest"]["sites"]) == 3
     assert all(isinstance(value, bytes) for value in fixture["raw_objects"].values())
+    maps = [source for source in fixture["manifest"]["sources"] if source["kind"] == "map"]
+    assert len(maps) == 2 and all(source["metadata"]["crs"] == "WGS84" for source in maps)
 
 
 def test_after_midnight_high_does_not_start_segment():
@@ -357,3 +417,69 @@ def test_source_bound_tide_curve_must_agree_with_minute_extrema(tmp_path: Path, 
     assert result["state"] == "BLOCKED"
     assert any(f"{kind} extremum/curve contradiction" in error for error in result["errors"])
     assert not any("normalized values" in error for error in result["errors"])
+
+
+def test_independent_maps_and_attribution_need_explicit_review(frozen_run: Path):
+    _, record = map_candidate(frozen_run)
+    path = checklist_file(frozen_run, record)
+    with pytest.raises(ValueError, match="map images and source attribution"):
+        review_candidate(frozen_run, "approve", path)
+    review = read_json(path)
+    review["checklist"].update(dict.fromkeys(MAP_REVIEW_CHECKLIST, True))
+    write_json(path, review)
+    assert review_candidate(frozen_run, "approve", path)["state"] == "APPROVED_REPORT"
+    assert review_status(frozen_run)["valid"] is True
+
+
+@pytest.mark.parametrize("edit", ["delete_map", "erase_map_kind", "erase_source", "erase_metadata", "erase_all_maps", "low_resolution", "erase_source_copy"])
+def test_map_candidate_cannot_downgrade_or_omit_bound_outputs(frozen_run: Path, edit: str):
+    from PIL import Image
+
+    path, record = map_candidate(frozen_run)
+    maps = [artifact for artifact in record["artifacts"] if artifact["kind"] == "map_png"]
+    if edit == "delete_map":
+        record["artifacts"].remove(maps[0])
+    elif edit == "erase_map_kind":
+        maps[0]["kind"] = "index"
+    elif edit == "erase_source":
+        maps[0].pop("map_source_id")
+    elif edit == "erase_metadata":
+        record["artifacts"] = [artifact for artifact in record["artifacts"] if artifact["kind"] != "map_metadata"]
+    elif edit == "erase_all_maps":
+        record["artifacts"] = [artifact for artifact in record["artifacts"] if artifact["kind"] not in {"map_png", "map_metadata"}]
+        record.pop("maps_required")
+    elif edit == "low_resolution":
+        image_path = path.parent / maps[0]["file"]
+        Image.new("RGB", (200, 100), "white").save(image_path)
+        maps[0]["sha256"] = sha256_file(image_path)
+    else:
+        record["artifacts"] = [artifact for artifact in record["artifacts"] if artifact["kind"] != "evidence"]
+    write_changed_candidate(path, record)
+    with pytest.raises(ValueError):
+        verify_candidate(frozen_run)
+
+
+def test_map_image_and_source_metadata_edit_invalidate_review(frozen_run: Path):
+    path, record = map_candidate(frozen_run)
+    review_path = checklist_file(frozen_run, record)
+    review = read_json(review_path)
+    review["checklist"].update(dict.fromkeys(MAP_REVIEW_CHECKLIST, True))
+    write_json(review_path, review)
+    review_candidate(frozen_run, "approve", review_path)
+    (path.parent / "map_sources.json").write_text("{}", encoding="utf-8")
+    assert review_status(frozen_run)["valid"] is False
+
+
+@pytest.mark.parametrize("change", ["unknown_id", "wrong_hash"])
+def test_fixture_map_references_use_only_pinned_bundled_ids(tmp_path: Path, change: str):
+    fixture = read_json(Path(__file__).parent / "fixtures" / "demo.json")
+    source_id = next(source["id"] for source in fixture["manifest"]["sources"] if source["kind"] == "map")
+    reference = fixture["raw_objects"][source_id]
+    if change == "unknown_id":
+        reference["bundled_map_source_id"] = "../../private/source"
+    else:
+        reference["sha256"] = "0" * 64
+    path = tmp_path / "fixture.json"
+    write_json(path, fixture)
+    with pytest.raises(ValueError, match="verified bundled source"):
+        load_fixture(path)

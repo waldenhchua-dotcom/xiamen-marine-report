@@ -2,9 +2,11 @@
 
 import math
 from datetime import datetime, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
+from jsonschema import validate
 from PIL import Image
 from pypdf import PdfReader
 
@@ -12,6 +14,7 @@ from xiamen_marine_report.demo import generate_fixture
 from xiamen_marine_report.provenance import read_json, save_run, sha256_file, write_json
 from xiamen_marine_report.render import render_run
 from xiamen_marine_report.render.charts import direction_vector, hourly_ticks, series_map, wind_from_name
+from xiamen_marine_report.render.maps import _valid_point, coastline_land_cells, current_arrow_sample
 from xiamen_marine_report.render.style import FONT_PATH, status_label
 from xiamen_marine_report.review import review_candidate, review_status, verify_candidate
 from xiamen_marine_report.sunset import sunset_for_date
@@ -79,6 +82,8 @@ def test_real_pdf_three_comprehensive_pngs_and_frozen_bundle(rendered):
     assert candidate["synthetic"] is True
     assert candidate["delivery_label"] == "UNAPPROVED_REFERENCE"
     _, verified = verify_candidate(run)
+    schema = read_json(Path(__file__).resolve().parents[1] / "schemas" / "candidate.schema.json")
+    validate(candidate, schema)
     assert verified["candidate_digest"] == candidate["candidate_digest"]
     assert path.is_relative_to(run / "candidates")
     artifacts = candidate["artifacts"]
@@ -87,7 +92,7 @@ def test_real_pdf_three_comprehensive_pngs_and_frozen_bundle(rendered):
     assert len(pdfs) == 1 and len(pngs) == 3
     assert pdfs[0].read_bytes().startswith(b"%PDF-")
     reader = PdfReader(pdfs[0])
-    assert len(reader.pages) >= 18
+    assert len(reader.pages) >= 21
     text = "\n".join(page.extract_text() for page in reader.pages)
     for label in ("海沧湾", "五缘湾", "环东", "2026-10-10", "2026-10-11", "UNAPPROVED_REFERENCE", "SYNTHETIC", "雷暴"):
         assert label in text
@@ -97,6 +102,23 @@ def test_real_pdf_three_comprehensive_pngs_and_frozen_bundle(rendered):
         with Image.open(png) as image:
             assert image.width >= 2400
             assert image.height >= 6000
+    maps = [a for a in artifacts if a["kind"] == "map_png"]
+    assert len(maps) == 3
+    assert {a["site_id"] for a in maps} == {"haicang", "wuyuan", "huandong"}
+    for artifact in maps:
+        assert artifact["role"] == "map"
+        assert artifact["map_source_id"] == "map_osm_geojson"
+        with Image.open(path.parent / artifact["file"]) as image:
+            assert image.width >= 3000 and image.height >= 1800
+            assert len(image.resize((120, 80)).getcolors(9600) or []) > 100
+    assert len([a for a in artifacts if a["kind"] == "map_metadata"]) == 1
+    metadata = read_json(path.parent / "map_sources.json")
+    assert metadata["static_basemap"] is True
+    assert metadata["overlays_synthetic"] is True
+    assert "OpenStreetMap" in metadata["attribution"]
+    assert metadata["geometry_source_id"] == "map_osm_geojson"
+    assert metadata["original_source_id"] == "map_osm_raw"
+    assert "海岸、道路与证据点地图" in text
     for artifact in artifacts:
         assert sha256_file(path.parent / artifact["file"]) == artifact["sha256"]
     assert (path.parent / "manifest.json").read_bytes() == (run / "manifest.json").read_bytes()
@@ -137,6 +159,44 @@ def test_partial_single_site_is_explicit_and_never_awaiting_review(tmp_path):
     text = "\n".join(page.extract_text() for page in PdfReader(pdf).pages)
     assert "PARTIAL" in text and "未取得目标日正文" in text
     assert "SYNTHETIC" in status_label(manifest, True)
+
+
+def test_unverified_station_crs_is_never_overlaid_on_wgs84():
+    assert _valid_point({"latitude": 24.5, "longitude": 118.1, "crs": "WGS84"}, station=True)
+    assert not _valid_point({"latitude": 24.5, "longitude": 118.1, "crs": "unverified"}, station=True)
+    assert not _valid_point({"latitude": 24.5, "longitude": 118.1}, station=True)
+
+
+@pytest.mark.parametrize("latitude,longitude", [(math.nan, 118), (24, math.inf), (True, 118), (95, 118), (24, 200)])
+def test_invalid_coordinates_are_not_mapped_or_used_for_plot_limits(latitude, longitude):
+    assert not _valid_point({"latitude": latitude, "longitude": longitude})
+
+
+def test_current_arrow_never_combines_speed_and_direction_from_different_grids():
+    manifest = generate_fixture()["manifest"]
+    mapping = series_map(manifest, "haicang")
+    assert current_arrow_sample(mapping)[0] is not None
+    mapping["current_speed"] = {**mapping["current_speed"],
+                                "grid": {**mapping["current_speed"]["grid"], "longitude": 118.2}}
+    assert current_arrow_sample(mapping)[0] is None
+    assert "不同格点" in current_arrow_sample(mapping)[1]
+
+
+def test_directed_coast_clipping_fills_only_documented_land_left():
+    from shapely.geometry import Point
+    features = [{"type": "Feature", "properties": {"layer": "coastline"},
+                 "geometry": {"type": "LineString", "coordinates": [[0, 2], [0, -2]]}}]
+    land = coastline_land_cells(features, (-1, -1, 1, 1))
+    # Facing south, the documented left side is east. The map border closes the
+    # clipped color region, without adding a fake coast between source endpoints.
+    assert any(p.contains(Point(.5, 0)) for p in land)
+    assert not any(p.contains(Point(-.5, 0)) for p in land)
+
+
+def test_missing_coastline_gap_is_never_connected_into_land():
+    features = [{"type": "Feature", "properties": {"layer": "coastline"},
+                 "geometry": {"type": "LineString", "coordinates": [[0, .5], [0, -.5]]}}]
+    assert coastline_land_cells(features, (-1, -1, 1, 1)) == []
 
 
 def test_artifact_change_invalidates_candidate_hash(rendered):

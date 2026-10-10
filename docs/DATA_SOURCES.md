@@ -13,6 +13,7 @@
 | Open-Meteo GFS | 降水概率 | 另一次 `gfs_seamless` 请求，单独 source/grid | 不把该变量署名为 ECMWF；集合概率不等于官方预警 |
 | Open-Meteo Marine | 有效波高、涌浪高及周期、流速/流向、海温 | 每变量单独请求和实际返回格点 | 约 8 km 模型对封闭湾内的适用性未证实，始终阻断局地安全结论 |
 | 厦门海洋中心公开页面 | 主页及公开预报页原件 | 能访问页面并保存原件 | 尚未可靠结构化核验目标日预警/预报正文、发布时间、有效段和海区覆盖 |
+| OpenStreetMap / Overpass | 真实静态海岸、岛屿、水体水系、主路与桥、地名 | 离线 GeoJSON、原始响应和来源哈希 | 社区地图非官方航海图；不提供实时潮线、深度或下水许可 |
 
 真实取数能够成功，而完整报告仍可以是 `BLOCKED`。网页 HTTP 200、预报数值存在、离线示例成功，均不证明现场安全可行。
 
@@ -158,14 +159,49 @@ stations[]: {site_id, source_id, id, name, latitude, longitude, datum,
 series[], extrema[], official_documents[]: 与 manifest 同结构
 ```
 
-必须使用公开、无凭据的来源 URL，所有源文件哈希匹配；不允许路径穿越、私人 URL、混入合成数据、错目标日或缺独立核验记录。建议所有导入 source 使用 `import_` 前缀；`weather_`、`marine_`、`tide_`、`xiamen_` 为自动源保留前缀，不允许导入覆盖。提取数据与原始正文分别冻结：提取源的 `metadata.original_source_id` 指向同 bundle 中保存原始正文的源。提取源的文件使用 JSON 包装 `{series:[...], extrema:[...], official_documents:[...]}`；bundle 中每个规范化记录必须与包装文件中的完整记录相同。这让 manifest 数字改动能够由原件绑定校验发现，同时如实说明这是人工审阅的提取，非原 API 原生字段。原始正文与提取仍需独立人员对照核验。
+必须使用公开、无凭据的来源 URL，所有源文件哈希匹配；不允许路径穿越、私人 URL、混入合成数据、错目标日或缺独立核验记录。建议所有导入 source 使用 `import_` 前缀；`weather_`、`marine_`、`tide_`、`xiamen_`、`map_` 为自动源保留前缀，不允许导入覆盖。提取数据与原始正文分别冻结：提取源的 `metadata.original_source_id` 指向同 bundle 中保存原始正文的源。提取源的文件使用 JSON 包装 `{series:[...], extrema:[...], official_documents:[...]}`；bundle 中每个规范化记录必须与包装文件中的完整记录相同。这让 manifest 数字改动能够由原件绑定校验发现，同时如实说明这是人工审阅的提取，非原 API 原生字段。原始正文与提取仍需独立人员对照核验。
 
 站点导入是完整记录替换，并需要官方提取 source_id。提取源的 JSON 包装另有 `stations:[...]`，与 bundle 里的完整站点记录一致；运行时去掉 site_id 后形成 reference_station，所有字段均由该冻结记录绑定。如果导入声明站点时区已经核实，必须给出 `timezone=Asia/Shanghai` 和 `timezone_evidence_source_id`，指向经过独立核验的官方原件；不能只给 `timezone_verified=true`。站点水域关系同理需 `relation_evidence_source_id`。本程序不自动理解一份时区正文，不将这种导入审阅等同于最终报告审核。原件补足时间语义后，三段范围和每变量逐小时覆盖仍需常规 `validate` 门禁。
 
-## 坐标、地图、日落与故障行为
+## 真实离线地图：OpenStreetMap 静态底图
 
-三个目标点是项目人工选择的约略 WGS84 规划点，分别为海沧 `(24.490,118.040)`、五缘湾 `(24.534,118.169)`、环东 `(24.603,118.174)`，不是测绘点或许可下水口。没有使用 GCJ-02 标记冒充 WGS84。源格点由每次 API 响应取得并注明偏移；官方潮站坐标保留“源未说明 CRS”。地图为程序绘制的点位示意，没有下载商业底图或将静态图标注成实时流场。日落由本地天文算法按地点、覆盖日期计算，输出“约/估算”，未修正局部地形、地平线与天气。
+官方资料：[OSM 版权和许可](https://www.openstreetmap.org/copyright)、[ODbL-1.0 全文](https://opendatacommons.org/licenses/odbl/1-0/)、[OSMF 署名规则](https://osmfoundation.org/wiki/Licence/Attribution_Guidelines)、[Overpass 项目](https://overpass-api.de/)、[官方社区 API 用法及服务器规则](https://wiki.openstreetmap.org/wiki/Overpass_API)、[海岸线方向/定义](https://wiki.openstreetmap.org/wiki/Tag:natural%3Dcoastline)。
 
-HTTP 请求最多尝试两次，每次超时默认 20 秒，上限 120 秒；暂时性网络/429/5xx失败在中间等待 0.25 秒，语义错误不无限重试。HTTP 200 但 `State=false/Data=null`、空响应、错日期、时区不符、格点缺失、单位未知都属于缺证据。跨日潮表缺失写 `BLOCKED_CROSS_DAY_DATA` 并保留源包。传输使用原始公开域名直连（不继承环境代理），国内官方源失败不会换海外镜像。原始响应最大 8 MiB；超限记为缺失，异常文字不把完整含密钥请求泄露到日志。
+2026-10-10 已实际进行一次低频静态数据提取，没有批量下载公共地图瓦片。端点为 `POST https://overpass-api.de/api/interpreter`，表单参数 `data` 存放 Overpass QL。`out body geom` 保存对象标识、公共 tags 与实际 WGS84 几何；没有下载作者账号/编辑者元数据。完整查询在包内 `assets/maps/metadata.json`，主要内容是：
+
+```text
+[out:json][timeout:60];(
+way["natural"="coastline"](24.30,117.80,24.85,118.70);
+way["natural"="water"](24.30,117.80,24.85,118.70);
+way["waterway"~"^(river|canal)$"](24.30,117.80,24.85,118.70);
+way["highway"~"^(motorway|trunk|primary|secondary|tertiary|motorway_link|trunk_link|primary_link|secondary_link)$"](24.30,117.80,24.85,118.70);
+node["place"~"^(city|town|suburb|quarter)$"](24.30,117.80,24.85,118.70);
+node["natural"="bay"](24.30,117.80,24.85,118.70);
+);out body geom;
+```
+
+实际数据库版本时间为 **2026-10-10T00:27:51Z**，取证时间为 **2026-10-10T00:29:10.787071+00:00**。范围按 `[west,south,east,north]` 记录为 `[117.80,24.30,118.70,24.85]`，足够覆盖三湾局部地图及本次报告周边格点。GeoJSON 坐标顺序是 `[longitude,latitude]`，WGS84，不进行 GCJ-02 位移。响应返回的是区域当前数据库快照，而不是目标日实时岸线；图上须明显标“静态 OSM 底图”和来源日期。
+
+包内文件和校验：
+
+| 文件 | 类型/大小 | SHA-256 |
+| --- | --- | --- |
+| `xiamen_osm_raw.json.gz` | 原始响应无损 gzip，3,364,360 bytes；解压原件 20,500,736 bytes | 解压原件 `612e71537bb216a17fff698ec3ce5c370974eb3dc4c89b976fcfc297df8158ae`；gzip 自身摘要见 metadata |
+| `xiamen_basemap.geojson` | 可公开下载的衍生数据库，6,157,660 bytes | `0322713b569928414b0da557ffe26a51b4184609e9d3f487afe49029bf883e6d` |
+| `metadata.json` / `README.md` / `ODbL-1.0.txt` | 查询、版本、处理方法、归属、限制与完整数据许可 | 每次 run 中的实际来源由 manifest 哈希绑定 |
+
+数据包含 795 条真实海岸 ways（28,186 个原始海岸坐标）、5,719 条骨架道路/已标注桥梁、2,149 个水体对象、518 条水系、257 个地名点及 609 个严格闭合岛屿陆地多边形。为了图面可读，仅保留高速/干线/主要道路和实际桥梁标签道路，不用没有来源的街道或港口补线。已核三湾局部范围都具有真实海岸及道路数据。
+
+GeoJSON 保留原始选定坐标，未简化海岸。岛屿多边形仅由方向一致且 OSM 节点 ID/端点坐标完全相同的海岸拼接闭环；按 OSM 陆地在左侧的规范采用逆时针完整环。不为开放的大陆海岸造封口线。闭合水体 ways 保留原多边形，其他海岸/水系保留线。原 ways 可延伸到查询框外，显示时裁切不等于取得框外完整数据。OSM 海岸通常表示平均大潮高潮岸线，并不表示实时水线、水深或经过测绘的安全边界。
+
+`providers.maps.load_basemap_sources()` 离线检查压缩/原件/GeoJSON 摘要，把 `map_osm_raw` 与 `map_osm_geojson` 两个真实 `kind=map` 来源冻结到 run。GeoJSON 的 `metadata.original_source_id` 引用原始响应；每个地图输出引用地图 source_id，候选包保存哈希绑定副本。渲染和 `demo` 不访问任何地图服务器。示例的预报和覆盖点是合成数据，底图地理本身是真实的静态 OSM 数据，两个标签不能混淆。
+
+**许可和公开提供：**原始提取和衍生 GeoJSON 作为数据库以 ODbL-1.0 单独公开提供，保留 OSM 来源、许可和归属说明，满足派生数据库公开使用的共享相同许可及机器可读获取要求。它不会把独立 Python 代码的 Apache-2.0 改成 ODbL，也不把独立气象/海洋源重新许可。PNG/PDF 属于地图呈现，仍需清楚署名和提供衍生数据库获取途径。图旁显示 `© OpenStreetMap contributors` 与 `https://www.openstreetmap.org/copyright`；HTML 预览提供可点击归属链接。ODbL 包括数据库商用权利，但公共 Overpass 服务自身的访问规则是另一层限制，生产商业频繁取数需核服务器规则或使用自有/付费服务。本项目运行时只读已缓存合法快照，不依赖免费公共地图服务持续可用。
+
+## 坐标、日落与故障行为
+
+三个目标点是项目人工选择的约略 WGS84 规划点，分别为海沧 `(24.490,118.040)`、五缘湾 `(24.534,118.169)`、环东 `(24.603,118.174)`，不是测绘点或许可下水口。没有使用 GCJ-02 标记冒充 WGS84。源格点由每次 API 响应取得并注明偏移；官方潮站坐标保留“源未说明 CRS”。真实静态底图不被标成实时流场；地图只画来源支持的格点箭头，没有虚构全湾潮流。日落由本地天文算法按地点、覆盖日期计算，输出“约/估算”，未修正局部地形、地平线与天气。
+
+天气、海洋与潮汐 HTTP 请求最多尝试两次，每次超时默认 20 秒，上限 120 秒；暂时性网络/429/5xx失败在中间等待 0.25 秒，语义错误不无限重试。HTTP 200 但 `State=false/Data=null`、空响应、错日期、时区不符、格点缺失、单位未知都属于缺证据。跨日潮表缺失写 `BLOCKED_CROSS_DAY_DATA` 并保留源包。传输使用原始公开域名直连（不继承环境代理），国内官方源失败不会换海外镜像。这类在线响应最大 8 MiB；超限记为缺失，异常文字不把完整含密钥请求泄露到日志。地图只在开发时一次性取得较大的公开矢量数据，受核验后的 Overpass 查询规则约束；运行时离线解压已知哈希快照，不适用在线小响应上限。
 
 联网 smoke 是手动行为，CI 单元及集成验证使用离线合成数据。合成成功只说明程序流程可运行，不表示真实全范围海况成功。本版本没有 n8n、Claude 或其他付费模型调用，`analysis_provider=none`。

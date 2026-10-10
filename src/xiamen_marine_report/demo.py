@@ -1,6 +1,7 @@
 """Offline fixtures. No records here are observations or official forecasts."""
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from datetime import datetime, time, timedelta, timezone
@@ -13,7 +14,7 @@ from .provenance import read_json, save_run, write_json
 from .validate import validate_run
 
 
-def generate_fixture(date: str = "2026-10-10") -> dict[str, Any]:
+def generate_fixture(date: str = "2026-10-10", *, include_maps: bool = True) -> dict[str, Any]:
     """Return manifest plus raw byte objects for a clearly synthetic two-day run."""
     day = parse_date(date)
     midnight = datetime.combine(day, time(), SHANGHAI)
@@ -160,12 +161,23 @@ def generate_fixture(date: str = "2026-10-10") -> dict[str, Any]:
                 "analysis_provider": "none", "created_at": retrieved,
                 "sites": sites, "sources": source_records, "extrema": extrema,
                 "series": series, "official_documents": official, "gaps": []}
+    if include_maps:
+        from .providers.maps import load_basemap_sources
+        map_sources, map_raw_objects = load_basemap_sources()
+        manifest["sources"].extend(map_sources)
+        raw_objects.update(map_raw_objects)
     return {"manifest": manifest, "raw_objects": raw_objects}
 
 
 def write_fixture(path: Path | str, date: str = "2026-10-10") -> None:
     fixture = generate_fixture(date)
-    fixture["raw_objects"] = {key: json.loads(value) for key, value in fixture["raw_objects"].items()}
+    map_source_ids = {source["id"] for source in fixture["manifest"]["sources"] if source.get("kind") == "map"}
+    # Pin bundled static map bytes without duplicating a large original in the fixture.
+    fixture["raw_objects"] = {
+        key: {"bundled_map_source_id": key, "sha256": hashlib.sha256(value).hexdigest()}
+        if key in map_source_ids else json.loads(value)
+        for key, value in fixture["raw_objects"].items()
+    }
     write_json(path, fixture)
 
 
@@ -175,10 +187,24 @@ def load_fixture(path: Path | str) -> dict[str, Any]:
         raise ValueError("Fixture needs manifest and raw_objects")
     if fixture.get("manifest", {}).get("synthetic") is not True:
         raise ValueError("Offline demo accepts explicitly synthetic fixtures only")
-    fixture["raw_objects"] = {
-        key: (json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n").encode("utf-8")
-        for key, value in fixture["raw_objects"].items()
-    }
+    map_source_ids = {source["id"] for source in fixture["manifest"].get("sources", []) if source.get("kind") == "map"}
+    bundled: dict[str, bytes] = {}
+    if map_source_ids:
+        from .providers.maps import load_basemap_sources
+        _sources, bundled = load_basemap_sources()
+    raw_objects: dict[str, bytes] = {}
+    for key, value in fixture["raw_objects"].items():
+        if key in map_source_ids:
+            if (not isinstance(value, dict) or set(value) != {"bundled_map_source_id", "sha256"}
+                    or value["bundled_map_source_id"] != key or key not in bundled
+                    or hashlib.sha256(bundled[key]).hexdigest() != value["sha256"]):
+                raise ValueError("Fixture static map reference is not a verified bundled source ID/hash")
+            raw_objects[key] = bundled[key]
+        else:
+            raw_objects[key] = (json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n").encode("utf-8")
+    if not map_source_ids.issubset(raw_objects):
+        raise ValueError("Fixture is missing pinned static map evidence")
+    fixture["raw_objects"] = raw_objects
     return fixture
 
 

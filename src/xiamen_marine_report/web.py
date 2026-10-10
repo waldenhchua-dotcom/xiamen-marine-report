@@ -105,7 +105,7 @@ class JobStore:
             paths: dict[str, Path] = {}
             candidate = None
             if validation["state"] == "VALIDATED" or request["allow_partial"]:
-                self._update(job_id, message="绘制 PDF 与各水域 PNG 综合图")
+                self._update(job_id, message="绘制 PDF、各水域综合图与地图图片")
                 from .render import render_run
                 candidate_path = render_run(run, self.root / "reports", allow_partial=request["allow_partial"])
                 candidate = read_json(candidate_path)

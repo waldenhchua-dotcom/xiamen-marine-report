@@ -13,7 +13,7 @@ from ..review import candidate_digest
 from ..sunset import sunset_for_date
 from ..validate import validate_run
 from .charts import coverage_window, day_windows, render_day_chart, series_map
-from .maps import grid_description, grid_inventory, render_map
+from .maps import grid_description, grid_inventory, load_map_bundle, map_sources_metadata, render_map
 from .pdf import render_pdf
 from .style import FONT_BOLD_PATH, FONT_PATH, INK, MUTED, RED, configure_fonts, status_label
 
@@ -182,6 +182,7 @@ def render_run(run_dir: Path, output_dir: Path, *, allow_partial: bool = False) 
         evidence = (run_dir / source["file"]).resolve()
         if not evidence.is_relative_to(run_dir) or not evidence.is_file() or sha256_file(evidence) != source["sha256"]:
             raise ValueError("Evidence path or hash invalid; refusing to render corrupted evidence")
+    map_bundle = load_map_bundle(run_dir, manifest)
     configure_fonts()
     suffix = "PARTIAL_UNAPPROVED_REFERENCE" if partial else "UNAPPROVED_REFERENCE"
     # Keep the container short for Windows deep checkouts; deliverable filenames
@@ -194,7 +195,9 @@ def render_run(run_dir: Path, output_dir: Path, *, allow_partial: bool = False) 
     assets = {}
     sunsets = []
     for site in manifest["sites"]:
-        map_path = render_map(manifest, site, build_dir / f"{site['id']}_map.png")
+        map_path = render_map(manifest, site,
+                              candidate_dir / f"{manifest['request_date']}_{site['id']}_map_{suffix}.png",
+                              map_bundle, partial=partial)
         start, end = coverage_window(manifest, site, validation.get("coverage", {}))
         charts = []
         for begin, finish in day_windows(start, end):
@@ -212,12 +215,25 @@ def render_run(run_dir: Path, output_dir: Path, *, allow_partial: bool = False) 
         shutil.copyfile(run_dir / source["file"], dest)
     write_json(candidate_dir / "validation.json", validation)
     write_json(candidate_dir / "sunsets.json", sunsets)
+    write_json(candidate_dir / "map_sources.json", map_sources_metadata(manifest, map_bundle))
     (candidate_dir / "sources.md").write_text(_source_index(manifest, validation), encoding="utf-8")
     # Known, locally created build directory only; no user paths are recursively removed.
     shutil.rmtree(build_dir)
-    artifacts = [{"file": p.relative_to(candidate_dir).as_posix(), "sha256": sha256_file(p),
-                  "kind": "pdf" if p.suffix == ".pdf" else "png" if p.suffix == ".png" else "evidence" if "evidence" in p.parts else "index"}
-                 for p in sorted(candidate_dir.rglob("*")) if p.is_file()]
+    map_files = {Path(item["map"]).name: site_id for site_id, item in assets.items()}
+    artifacts = []
+    for p in sorted(candidate_dir.rglob("*")):
+        if not p.is_file():
+            continue
+        artifact = {"file": p.relative_to(candidate_dir).as_posix(), "sha256": sha256_file(p),
+                    "kind": "pdf" if p.suffix == ".pdf" else "png" if p.suffix == ".png" else "evidence" if "evidence" in p.parts else "index"}
+        if p.name in map_files:
+            artifact.update(kind="map_png", role="map", site_id=map_files[p.name],
+                            map_source_id="map_osm_geojson", source_ids=["map_osm_geojson", "map_osm_raw"])
+        elif p.name == "map_sources.json":
+            artifact.update(kind="map_metadata", role="source_attribution")
+        elif artifact["kind"] == "png":
+            artifact.update(role="comprehensive")
+        artifacts.append(artifact)
     candidate = {
         "candidate_id": candidate_id, "request_date": manifest["request_date"],
         "manifest_sha256": sha256_file(run_dir / "manifest.json"), "synthetic": bool(manifest.get("synthetic")),

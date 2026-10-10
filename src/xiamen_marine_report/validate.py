@@ -127,7 +127,7 @@ def _validate_run(run_dir: Path | str) -> dict[str, Any]:
     if not isinstance(manifest.get("synthetic"), bool):
         errors.append("Synthetic classification must be explicit")
     if manifest.get("synthetic"):
-        warnings.append("SYNTHETIC: every number is a test value, not a marine forecast")
+        warnings.append("SYNTHETIC: marine data, stations and grids are synthetic test values, not a marine forecast; static OpenStreetMap geography is real")
     if manifest.get("analysis_provider") != "none":
         errors.append("This deterministic release supports analysis_provider=none only")
     try:
@@ -191,7 +191,7 @@ def _validate_run(run_dir: Path | str) -> dict[str, Any]:
                 errors.append(f"Source {source_id}: retrieval time must be UTC")
         except (ValueError, TypeError):
             errors.append(f"Source {source_id}: retrieval UTC time missing")
-        if source.get("kind") not in {"forecast", "synthetic", "astronomical", "official", "observed", "historical"}:
+        if source.get("kind") not in {"forecast", "synthetic", "astronomical", "official", "observed", "historical", "cartographic", "map"}:
             errors.append(f"Source {source_id}: unknown data kind")
         if source.get("kind") == "synthetic" and manifest.get("synthetic") is not True:
             errors.append(f"Source {source_id}: synthetic evidence in a real-data run")

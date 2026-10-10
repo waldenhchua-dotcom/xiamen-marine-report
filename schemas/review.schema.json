@@ -17,7 +17,8 @@
         "tide_extrema_and_hourly_values": {"type": "boolean"}, "wind_and_gust_peaks": {"type": "boolean"},
         "hourly_and_total_precipitation": {"type": "boolean"}, "weather_codes_and_official_warnings": {"type": "boolean"},
         "spatial_applicability": {"type": "boolean"}, "three_flood_segments_cross_day_coverage": {"type": "boolean"},
-        "tide_and_current_distinction": {"type": "boolean"}, "all_pdf_pages_and_three_pngs_readable": {"type": "boolean"}
+        "tide_and_current_distinction": {"type": "boolean"}, "all_pdf_pages_and_three_pngs_readable": {"type": "boolean"},
+        "map_images_and_source_attribution": {"type": "boolean", "description": "Required for approval when the final candidate includes standalone map PNGs."}
       }
     },
     "notes": {"type": "string"}

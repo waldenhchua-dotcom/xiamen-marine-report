@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "title": "厦门三湾真实静态OpenStreetMap海岸与道路底图",
+  "source_url": "https://overpass-api.de/api/interpreter",
+  "method": "POST",
+  "query": "[out:json][timeout:60];(\nway[\"natural\"=\"coastline\"](24.30,117.80,24.85,118.70);\nway[\"natural\"=\"water\"](24.30,117.80,24.85,118.70);\nway[\"waterway\"~\"^(river|canal)$\"](24.30,117.80,24.85,118.70);\nway[\"highway\"~\"^(motorway|trunk|primary|secondary|tertiary|motorway_link|trunk_link|primary_link|secondary_link)$\"](24.30,117.80,24.85,118.70);\nnode[\"place\"~\"^(city|town|suburb|quarter)$\"](24.30,117.80,24.85,118.70);\nnode[\"natural\"=\"bay\"](24.30,117.80,24.85,118.70);\n);out body geom;",
+  "http_status": 200,
+  "retrieved_at": "2026-10-10T00:29:10.787071+00:00",
+  "timestamp_osm_base": "2026-10-10T00:27:51Z",
+  "snapshot_date": "2026-10-10",
+  "version": "Overpass API 0.7.62.11 87bfad18",
+  "query_bbox": [
+    117.8,
+    24.3,
+    118.7,
+    24.85
+  ],
+  "bbox_order": "west,south,east,north",
+  "crs": "WGS84",
+  "coordinate_order": "longitude,latitude",
+  "license": "ODbL-1.0",
+  "license_url": "https://opendatacommons.org/licenses/odbl/1-0/",
+  "copyright_url": "https://www.openstreetmap.org/copyright",
+  "attribution": "© OpenStreetMap contributors",
+  "share_alike": "Original database extract and derived GeoJSON made available under ODbL-1.0 separately from Apache-2.0 program code",
+  "geometry_processing": "Original OSM coordinates retained; motorway/trunk/primary and bridge-tagged road skeleton, selected public names/tags, exact closed island assembly; no simplification or invented coastline",
+  "layer_counts": {
+    "place": 257,
+    "coastline": 795,
+    "water": 2149,
+    "road": 5719,
+    "waterway": 518,
+    "land": 609
+  },
+  "limitations": [
+    "Static community mapping, not real-time shoreline or currents",
+    "Coastline approximates mean high-water springs; not depth or a surveyed safe launch boundary",
+    "Incomplete OSM roads/water/place coverage may remain",
+    "Full selected way coordinates may extend outside query bounding box; display clips only",
+    "No official launch permission inferred from landmarks"
+  ],
+  "assets": {
+    "raw": {
+      "file": "xiamen_osm_raw.json.gz",
+      "storage": "gzip",
+      "storage_sha256": "5d254e13069bbffd3ee79280a9f47adb7bb386a5201627dbf9b477ac38578ece",
+      "sha256": "612e71537bb216a17fff698ec3ce5c370974eb3dc4c89b976fcfc297df8158ae",
+      "size_bytes": 20500736,
+      "storage_size_bytes": 3364360
+    },
+    "geojson": {
+      "file": "xiamen_basemap.geojson",
+      "storage": "identity",
+      "sha256": "0322713b569928414b0da557ffe26a51b4184609e9d3f487afe49029bf883e6d",
+      "size_bytes": 6157660
+    }
+  }
+}

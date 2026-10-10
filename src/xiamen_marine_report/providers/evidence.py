@@ -46,7 +46,7 @@ def load_evidence(evidence_dir: Path, request_date: str, site_ids: list[str]) ->
         if (not isinstance(source_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", source_id)
                 or source_id in source_ids):
             raise ValueError("Invalid or duplicate imported source ID")
-        if source_id.startswith(("weather_", "marine_", "tide_", "xiamen_")):
+        if source_id.startswith(("weather_", "marine_", "tide_", "xiamen_", "map_")):
             raise ValueError("Imported source ID conflicts with an automatic provider namespace; use import_ prefix")
         source_ids.add(source_id)
         target = safe_relative_path(evidence_dir, source.get("file", ""))

@@ -38,7 +38,9 @@ def test_ui_and_health_are_self_contained(web_server):
     assert status == 200 and "厦门" in body.decode()
     assert "default-src 'self'" in headers["Content-Security-Policy"]
     assert headers["X-Content-Type-Options"] == "nosniff"
-    assert b"https://" not in body
+    assert b'https://www.openstreetmap.org/copyright' in body
+    assert b'<script src="/app.js"' in body and b'<link rel="stylesheet" href="/style.css"' in body
+    assert b'<script src="https://' not in body and b'<link rel="stylesheet" href="https://' not in body
     status, _, body = request(web_server, "/api/health")
     assert status == 200 and json.loads(body)["timezone"] == "Asia/Shanghai"
 

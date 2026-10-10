@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.org/xiamen-marine-report/candidate.schema.json",
+  "title": "Frozen candidate artifacts and independent map evidence",
+  "type": "object",
+  "required": ["candidate_id", "request_date", "manifest_sha256", "synthetic", "state", "validation_state", "artifacts", "created_at", "candidate_digest"],
+  "properties": {
+    "candidate_id": {"type": "string", "minLength": 1},
+    "request_date": {"type": "string", "format": "date"},
+    "manifest_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "candidate_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "synthetic": {"type": "boolean"},
+    "maps_required": {"type": "boolean"},
+    "state": {"enum": ["AWAITING_REVIEW", "BLOCKED"]},
+    "validation_state": {"enum": ["VALIDATED", "BLOCKED", "BLOCKED_CROSS_DAY_DATA"]},
+    "created_at": {"type": "string", "format": "date-time"},
+    "artifacts": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "required": ["file", "sha256", "kind"],
+        "properties": {
+          "file": {"type": "string", "minLength": 1},
+          "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+          "kind": {"enum": ["pdf", "png", "map_png", "map_metadata", "evidence", "index"]},
+          "role": {"enum": ["map", "comprehensive", "source_attribution"]},
+          "site_id": {"enum": ["haicang", "wuyuan", "huandong"]},
+          "map_source_id": {"type": "string", "minLength": 1}
+        },
+        "allOf": [{"if": {"properties": {"kind": {"const": "map_png"}}}, "then": {"required": ["role", "site_id", "map_source_id"], "properties": {"role": {"const": "map"}}}}]
+      }
+    }
+  }
+}

@@ -147,6 +147,14 @@ def render_pdf(manifest: dict, validation: dict, site_assets: dict, destination:
     for site in manifest["sites"]:
         assets = site_assets[site["id"]]
         page_number = _overview_pages(canvas, manifest, site, validation, assets["map"], partial, page_number)
+        width, height = landscape(A3)
+        canvas.setPageSize(landscape(A3))
+        _page_header(canvas, manifest, partial, f"{site['name']} · 海岸、道路与证据点地图", width, height)
+        canvas.drawImage(str(assets["map"]), 25, 55, width=width - 50, height=height - 170,
+                         preserveAspectRatio=True, anchor="c")
+        _footer(canvas, manifest, page_number, width)
+        canvas.showPage()
+        page_number += 1
         for chart in assets["charts"]:
             width, height = landscape(A3)
             with Image.open(chart) as source:

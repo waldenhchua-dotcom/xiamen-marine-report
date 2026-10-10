@@ -5,7 +5,16 @@ const datePart = type => dateParts.find(part => part.type === type).value;
 $('date').value = `${datePart('year')}-${datePart('month')}-${datePart('day')}`;
 let busy = false;
 const states = {queued:'准备取证',running:'正在处理',complete:'候选已生成',blocked:'关键证据未通过',failed:'任务未完成'};
-const labelFor = file => file.name.endsWith('.zip') ? '冻结证据 ZIP' : file.name.endsWith('.pdf') ? (file.name.includes('PARTIAL') ? '部分查看 PDF · 未批准' : '参考 PDF · 未批准') : file.name.endsWith('.png') ? (file.name.includes('haicang') ? '海沧湾 PNG' : file.name.includes('wuyuan') ? '五缘湾 PNG' : file.name.includes('huandong') ? '环东 PNG' : file.name) : file.name;
+function labelFor(file) {
+  if (file.name.endsWith('.zip')) return '冻结证据 ZIP';
+  if (file.name.endsWith('.pdf')) return file.name.includes('PARTIAL') ? '部分查看 PDF · 未批准' : '参考 PDF · 未批准';
+  if (file.name.endsWith('.png')) {
+    const site = ['haicang', 'wuyuan', 'huandong'].find(id => file.name.includes(id));
+    const name = {haicang:'海沧湾', wuyuan:'五缘湾', huandong:'环东'}[site];
+    return name ? `${name}${file.kind === 'map_png' ? '地图' : '综合图'} PNG` : file.name;
+  }
+  return file.name;
+}
 function setBusy(value) {busy=value; $('fetch-button').disabled=value; $('demo-button').disabled=value;}
 function status(job) {
   $('status-mark').className = `status-mark ${job.status}`;
@@ -56,6 +65,7 @@ function showResult(job) {
     details.append(list);$('gaps').append(details);
   }
   $('downloads').replaceChildren();$('preview-tabs').replaceChildren();$('preview').replaceChildren();
+  $('map-attribution').hidden = !(job.files || []).some(file => file.kind === 'map_png');
   for(const file of job.files || []){
     const url=`/api/jobs/${job.id}/files/${encodeURIComponent(file.name)}`;
     const link=document.createElement('a');link.className='download';link.href=url;link.download=file.name;link.textContent=`↓ ${labelFor(file)}`;$('downloads').append(link);
@@ -69,8 +79,10 @@ function showResult(job) {
       });$('preview-tabs').append(tab);
     }
   }
-  const firstPng=[...$('preview-tabs').children].find(tab=>tab.textContent.endsWith('PNG'));
-  (firstPng || $('preview-tabs').firstElementChild)?.click();
+  const tabs=[...$('preview-tabs').children];
+  const firstMap=tabs.find(tab=>tab.textContent.includes('地图'));
+  const firstPng=tabs.find(tab=>tab.textContent.endsWith('PNG'));
+  (firstMap || firstPng || $('preview-tabs').firstElementChild)?.click();
   $('audit-json').textContent=JSON.stringify({state:job.validation?.state,run_id:job.run_id,candidate_digest:job.candidate_digest,analysis_provider:'none',sources:job.sources,validation:job.validation},null,2);
 }
 async function start(mode){
